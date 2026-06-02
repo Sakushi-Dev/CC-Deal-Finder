@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}CollectorCrypt – Marketplace{% endblock %}
+
+{% block body %}
+<header>
+  <h1>CollectorCrypt Marketplace &mdash; Karten
+    <a href="/deals" class="nav" style="font-size:.85rem;margin-left:1rem;">Deals-Scanner →</a>
+  </h1>
+  <div class="meta">
+    {% if found %}
+      {{ found }} Treffer{% if total_pages %} · Seite {{ page }} / {{ total_pages }}{% endif %}
+    {% else %}
+      Keine Daten
+    {% endif %}
+  </div>
+
+  <form class="controls" method="get" action="/">
+    <input type="search" name="q" value="{{ search }}"
+      placeholder="Suche (z.B. Charizard, Pikachu, PSA 10)">
+    <input type="number" name="step" min="6" max="100" value="{{ step }}" title="Karten pro Seite">
+    <input type="hidden" name="page" value="1">
+    <button type="submit">Suchen</button>
+  </form>
+
+  <div class="tabs">
+    <div class="tab active" data-panel="marketplace">Marketplace</div>
+    <div class="tab" data-panel="observe">Observe <span class="count" id="obs-count">0</span></div>
+    <div class="view-toggle" role="group" aria-label="Ansicht">
+      <button type="button" data-view-cards class="active" title="Kartenansicht">▣ Karten</button>
+      <button type="button" data-view-list                  title="Listenansicht">☰ Liste</button>
+    </div>
+  </div>
+
+  <div class="filters" id="filters">
+    <div class="group">
+      <label>Marketplace</label>
+      <select id="f-marketplace"><option value="">Alle</option></select>
+    </div>
+    <div class="group">
+      <label>Blockchain</label>
+      <select id="f-blockchain"><option value="">Alle</option></select>
+    </div>
+    <div class="group">
+      <label>Grade min</label>
+      <input type="number" id="f-grade-min" step="0.5" min="0" max="10" placeholder="0">
+    </div>
+    <div class="group">
+      <label>Grade max</label>
+      <input type="number" id="f-grade-max" step="0.5" min="0" max="10" placeholder="10">
+    </div>
+    <div class="group">
+      <label>Language</label>
+      <select id="f-language">
+        <option value="">Alle</option>
+        <option value="English">English</option>
+        <option value="Japanese">Japanese</option>
+        <option value="Korean">Korean</option>
+        <option value="Chinese">Chinese</option>
+        <option value="Spanish">Spanish</option>
+      </select>
+    </div>
+    <div class="group">
+      <label>Preis min</label>
+      <input type="number" id="f-price-min" step="any" min="0" placeholder="0">
+    </div>
+    <div class="group">
+      <label>Preis max</label>
+      <input type="number" id="f-price-max" step="any" min="0" placeholder="∞">
+    </div>
+    <div class="group" style="flex:1; min-width:240px;">
+      <label>Categories (unabhängig)</label>
+      <div class="cats" id="f-categories">
+        <label><input type="checkbox" value="Pokemon"> Pokemon</label>
+        <label><input type="checkbox" value="One Piece"> One Piece</label>
+        <label><input type="checkbox" value="Magic The Gathering"> Magic The Gathering</label>
+        <label><input type="checkbox" value="Basketball"> Basketball</label>
+        <label><input type="checkbox" value="Baseball"> Baseball</label>
+        <label><input type="checkbox" value="Football"> Football</label>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" class="reset" id="f-reset">Reset</button>
+    </div>
+  </div>
+</header>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if not cards and not error %}<div class="empty">Keine Karten gefunden.</div>{% endif %}
+
+<div class="panel active" id="panel-marketplace">
+  <div class="grid" id="grid-marketplace">
+    {% for c in cards %}{% include "_card.html" %}{% endfor %}
+  </div>
+</div>
+
+<div class="panel" id="panel-observe">
+  <div class="grid" id="grid-observe"></div>
+  <div id="observe-empty" class="empty">
+    Noch keine Karten beobachtet. Klicke „observe“ auf einer Karte im Marketplace.
+  </div>
+</div>
+
+{% if total_pages > 1 %}
+  <div class="pager">
+    <a class="btn" href="?q={{ search }}&step={{ step }}&page={{ page-1 }}"
+       aria-disabled="{{ 'true' if page <= 1 else 'false' }}">&larr; Zurück</a>
+    <span>Seite {{ page }} / {{ total_pages }}</span>
+    <a class="btn" href="?q={{ search }}&step={{ step }}&page={{ page+1 }}"
+       aria-disabled="{{ 'true' if page >= total_pages else 'false' }}">Weiter &rarr;</a>
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/marketplace.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}CollectorCrypt{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  {% block body %}{% endblock %}
+
+  <script src="{{ url_for('static', filename='js/lightbox.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/util.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/observe-store.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/insured.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/observe-cards.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/view-toggle.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

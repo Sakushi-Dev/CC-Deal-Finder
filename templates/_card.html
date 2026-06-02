@@ -1,0 +1,44 @@
+{# Wiederverwendbare Marketplace-Karte. Erwartet `c` = normalisiertes Dict. #}
+<div class="card"
+     data-title="{{ c.name|e }}"
+     data-category="{{ c.category|e }}"
+     data-price="{{ c.price_raw or '' }}"
+     data-grade="{{ c.grade_num or '' }}"
+     data-company="{{ c.grading_company|e }}"
+     data-grade-str="{{ c.grade_str|e }}"
+     data-number="{{ c.card_number|e }}"
+     data-language="{{ c.language|e }}"
+     data-card-name="{{ c.card_name|e }}"
+     data-set="{{ c.set|e }}"
+     data-insured="{{ c.insured_value or '' }}"
+     data-marketplace="{{ c.marketplace|e }}"
+     data-blockchain="{{ c.blockchain|e }}"
+     data-nft="{{ c.nft|e }}"
+     data-currency="{{ c.currency|e }}"
+     data-year="{{ c.year|e }}"
+     data-grading="{{ c.grading|e }}"
+     data-image="{{ c.image or '' }}"
+     data-image-full="{{ c.image_full or c.image or '' }}"
+     data-image-back="{{ c.image_back or '' }}"
+     data-cc-url="{{ c.url }}">
+  <button type="button" class="obs-btn" title="observe">observe</button>
+  <div class="detail">
+    {% if c.image %}<img src="{{ c.image }}" alt="" loading="lazy">{% endif %}
+    <div class="body">
+      <div class="name">{{ c.name }}</div>
+      <div class="sub">
+        {%- set parts = [] -%}
+        {%- if c.year %}{% set _ = parts.append(c.year|string) %}{% endif -%}
+        {%- if c.grading %}{% set _ = parts.append(c.grading) %}{% endif -%}
+        {%- if c.category %}{% set _ = parts.append(c.category) %}{% endif -%}
+        {{ parts | join(' · ') }}
+      </div>
+      <div class="price-row">
+        <span class="price">{{ c.price }}<span class="currency">{{ c.currency }}</span></span>
+        <a class="cc-link" href="{{ c.url }}" target="_blank" rel="noopener"
+           title="Auf CollectorCrypt öffnen" onclick="event.stopPropagation()">↗</a>
+      </div>
+    </div>
+  </div>
+  <div class="pc"></div>
+</div>
