@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/flask-3.0%2B-black.svg)](https://flask.palletsprojects.com/)
 [![Status](https://img.shields.io/badge/status-active-success.svg)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ---
 
@@ -128,4 +129,4 @@ python tools/discover_endpoints.py
 
 ## License
 
-This project has no explicit license. All rights reserved unless stated otherwise.
+This project is licensed under the [MIT License](LICENSE).
