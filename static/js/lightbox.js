@@ -1,18 +1,17 @@
-/* CC Lightbox – modulare Karten-Vorschau mit Flip + Parallax.
+/* CC Lightbox – modular card preview with flip + parallax.
  *
- * Wird einmal pro Seite eingebunden, injiziert sich selbst (CSS + DOM)
- * und exponiert:
+ * Loaded once per page, injects itself (CSS + DOM) and exposes:
  *   window.CCLightbox.open(frontSrc, backSrc?)
  *   window.CCLightbox.close()
  *   window.CCLightbox.wire(elements, getSources)
- *     – elements: NodeList/Array von DOM-Knoten
+ *     – elements: NodeList/Array of DOM nodes
  *     – getSources(el, event) -> { front, back } | null
- *       (Default liest data-image-full / data-image-back vom nächsten .card)
+ *       (default reads data-image-full / data-image-back from the nearest .card)
  */
 (function () {
   if (window.CCLightbox) return;
 
-  // --- CSS injizieren ----------------------------------------------------
+  // --- Inject CSS --------------------------------------------------------
   const CSS = `
     .cc-lb-overlay { position:fixed; inset:0; background:rgba(5,5,10,.85);
       display:none; align-items:center; justify-content:center; z-index:9999;
@@ -45,11 +44,11 @@
   styleEl.textContent = CSS;
   document.head.appendChild(styleEl);
 
-  // --- DOM injizieren ----------------------------------------------------
+  // --- Inject DOM --------------------------------------------------------
   const overlay = document.createElement('div');
   overlay.className = 'cc-lb-overlay';
   overlay.innerHTML = `
-    <div class="cc-lb-close" aria-label="schließen">×</div>
+    <div class="cc-lb-close" aria-label="close">×</div>
     <div class="cc-lb-stage">
       <div class="cc-lb-flipper">
         <div class="cc-lb-face front"><img alt=""></div>
@@ -96,7 +95,7 @@
     if (imgB.src) flipper.classList.toggle('flipped');
   });
 
-  // Parallax: Karte neigt sich Richtung Mauszeiger (max ~15°).
+  // Parallax: card tilts toward the mouse pointer (max ~15°).
   const MAX_DEG = 15;
   stage.addEventListener('mousemove', e => {
     const r = stage.getBoundingClientRect();
@@ -117,7 +116,7 @@
     gloss.style.removeProperty('--gy');
   });
 
-  // Default-Quellen: data-image-full / data-image-back von .card-Vorfahr.
+  // Default sources: data-image-full / data-image-back from the .card ancestor.
   function defaultSources(el) {
     const card = el.closest('.card');
     if (!card) return null;

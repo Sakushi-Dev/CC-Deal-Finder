@@ -1,13 +1,13 @@
-"""Extrahiert API-Pfade aus dem CollectorCrypt-Frontend-Bundle.
+"""Extract API paths from the CollectorCrypt frontend bundle.
 
-Sucht gezielt nach typischen API-Pfad-Literalen (marketplace, listings, cards,
-account, auth, blockchain, ...) und filtert CSS-Klassen heraus. Ergebnis ist
-eine sortierte Liste eindeutiger Pfade auf stdout.
+Searches specifically for typical API path literals (marketplace, listings,
+cards, account, auth, blockchain, ...) and filters out CSS classes. Output
+is a sorted list of unique paths on stdout.
 
-Aufruf:
+Usage:
     python tools/discover_endpoints.py [bundle_url]
 
-Ohne Argument wird die aktuelle main.<hash>.js-URL aus dem Index ermittelt.
+Without an argument, the current main.<hash>.js URL is discovered from the index.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def find_bundle_url() -> str:
     html = requests.get(ROOT, headers=UA, timeout=30).text
     m = re.search(r'src="(/main\.[a-f0-9]+\.js)"', html)
     if not m:
-        raise SystemExit("main.<hash>.js im HTML nicht gefunden.")
+        raise SystemExit("main.<hash>.js not found in HTML.")
     return urljoin(ROOT, m.group(1))
 
 
@@ -54,7 +54,7 @@ def main() -> None:
     print(f"# Bundle: {bundle}", file=sys.stderr)
     js = requests.get(bundle, headers=UA, timeout=60).text
     paths = extract(js)
-    print(f"# {len(paths)} Pfade gefunden", file=sys.stderr)
+    print(f"# {len(paths)} paths found", file=sys.stderr)
     for p in paths:
         print(p)
 

@@ -1,6 +1,6 @@
-/* Persistent gespeicherte Observe-Karten – Datenschicht.
+/* Persistently stored observe cards – data layer.
  *
- * Snapshot-Schema (kompatibel mit Marketplace + Deals):
+ * Snapshot schema (compatible with marketplace + deals):
  *   { nft, title, category, price, currency, year, grading,
  *     grade, company, gradeStr, number, language, cardName, set,
  *     insured, marketplace, blockchain, image, imageFull, imageBack, ccUrl }

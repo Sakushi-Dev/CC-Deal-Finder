@@ -1,7 +1,7 @@
-/* Marketplace-Seite: Filter + Observe + Insured + Lightbox + Tabs. */
+/* Marketplace page: filters + observe + insured + lightbox + tabs. */
 (function () {
-  // Snapshot-Felder aus Marketplace-Cards einmal aktualisieren, falls
-  // ältere Observe-Einträge (vor Insured-Wert) im Store stehen.
+  // Update snapshot fields from marketplace cards once, in case older
+  // observe entries (from before insured value existed) are in the store.
   (function migrate() {
     document.querySelectorAll('#grid-marketplace .card').forEach(c => {
       const id = c.dataset.nft || c.dataset.ccUrl;
@@ -16,10 +16,10 @@
     });
   })();
 
-  // Filter
+  // Filters
   CCFilters.init({ gridSelector: '#grid-marketplace' });
 
-  // Insured + Lightbox initial
+  // Insured + lightbox, initial wiring
   CCInsured.wire(document.querySelectorAll('#grid-marketplace .card'));
   CCLightbox.wire(document.querySelectorAll('.card .detail'));
 

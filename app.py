@@ -1,6 +1,6 @@
-"""Entry-Point: startet die modulare CollectorCrypt-App.
+"""Entry point: starts the modular CollectorCrypt app.
 
-Die eigentliche Logik liegt im Paket ``collectorcrypt``.
+The actual logic lives in the ``collectorcrypt`` package.
 """
 from collectorcrypt import create_app
 

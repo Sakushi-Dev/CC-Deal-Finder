@@ -1,4 +1,4 @@
-/* Deals-Seite: Scan-Controls, Live-Polling, Card-/Listen-Anzeige. */
+/* Deals page: scan controls, live polling, card/list view. */
 (function () {
   const { escapeHtml, fmtUSD, fmtPrice } = window.CC;
 
@@ -93,8 +93,8 @@
 
     CCInsured.wire(grid.querySelectorAll('.card'));
     CCLightbox.wire(grid.querySelectorAll('.card .detail'));
-    // Observe-Buttons der Deal-Karten verkabeln (Quelle = grid selbst,
-    // Observe-Grid auf Deals-Seite nicht vorhanden, daher noop-Container).
+    // Wire observe buttons on deal cards (source = the grid itself;
+    // there is no observe grid on the deals page, so we pass a noop container).
     CCObserveCards.wireGrid(document.createElement('div'), {
       sourceCards: () => grid.querySelectorAll('.card'),
     });
@@ -104,19 +104,19 @@
     const pill = document.getElementById('statusPill');
     if (state.running && state.paused) {
       pill.className = 'status-pill status-paused';
-      pill.textContent = 'pausiert';
+      pill.textContent = 'paused';
     } else if (state.running) {
       pill.className = 'status-pill status-running';
-      pill.innerHTML = '<span class="spinner"></span>läuft';
+      pill.innerHTML = '<span class="spinner"></span>running';
     } else if (state.done && state.stop_requested) {
       pill.className = 'status-pill status-stopped';
-      pill.textContent = 'gestoppt';
+      pill.textContent = 'stopped';
     } else if (state.done) {
       pill.className = 'status-pill status-done';
-      pill.textContent = 'fertig';
+      pill.textContent = 'done';
     } else {
       pill.className = 'status-pill status-idle';
-      pill.textContent = 'bereit';
+      pill.textContent = 'ready';
     }
   }
 
@@ -142,21 +142,21 @@
     if (state.updated_at) {
       const dt = new Date(state.updated_at * 1000);
       document.getElementById('statUpdated').textContent =
-        `letztes Update: ${dt.toLocaleTimeString()}`;
+        `last update: ${dt.toLocaleTimeString()}`;
     }
     const pageErr = document.getElementById('statPageErr');
     const failed = (state.failed_pages || []).length;
     if (failed) {
       pageErr.style.display = '';
-      pageErr.textContent = `Fehlerhafte Seiten: ${failed}` +
-        (state.last_page_error ? ` (zuletzt: ${state.last_page_error})` : '');
+      pageErr.textContent = `Failed pages: ${failed}` +
+        (state.last_page_error ? ` (last: ${state.last_page_error})` : '');
     } else {
       pageErr.style.display = 'none';
     }
 
     const btn = document.getElementById('scanBtn');
     btn.disabled = !!state.running;
-    btn.textContent = state.running ? 'Scan läuft …' : 'Scan starten';
+    btn.textContent = state.running ? 'Scan running …' : 'Start scan';
 
     document.getElementById('pauseBtn').disabled  = !state.running || state.paused || state.stop_requested;
     document.getElementById('resumeBtn').disabled = !state.running || !state.paused;
@@ -167,10 +167,10 @@
       grid.innerHTML = '';
       emptyEl.style.display = '';
       emptyEl.innerHTML = state.running
-        ? '<span class="spinner"></span> Noch keine Treffer – Scan läuft …'
+        ? '<span class="spinner"></span> No hits yet – scan running …'
         : (state.done
-            ? 'Keine Karten in dieser Preisspanne mit Insured Value gefunden.'
-            : 'Preisspanne eingeben und Scan starten.');
+            ? 'No cards in this price range with an insured value found.'
+            : 'Enter a price range and start the scan.');
       knownKeys.clear();
       return;
     }
@@ -182,7 +182,7 @@
     try {
       const res = await fetch('/deals/status', { cache: 'no-store' });
       render(await res.json());
-    } catch (e) { /* nächster Tick versucht es erneut */ }
+    } catch (e) { /* next tick will try again */ }
   }
   function startPolling() {
     if (pollTimer) return;
@@ -195,7 +195,7 @@
     const res = await fetch('/deals/start', { method: 'POST', body: new FormData(e.target) });
     const j = await res.json();
     if (!j.ok) {
-      errBox.textContent = j.error || 'Fehler beim Starten.';
+      errBox.textContent = j.error || 'Error while starting.';
       errBox.style.display = 'block';
       return;
     }
@@ -215,7 +215,7 @@
   document.getElementById('pauseBtn').addEventListener('click', () => sendControl('/deals/pause'));
   document.getElementById('resumeBtn').addEventListener('click', () => sendControl('/deals/resume'));
   document.getElementById('stopBtn').addEventListener('click', () => {
-    if (confirm('Scan wirklich stoppen? Bisherige Treffer bleiben erhalten.')) {
+    if (confirm('Really stop the scan? Existing hits will be kept.')) {
       sendControl('/deals/stop');
     }
   });

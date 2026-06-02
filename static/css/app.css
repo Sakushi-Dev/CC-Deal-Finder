@@ -1,15 +1,15 @@
-/* CollectorCrypt – gemeinsame Styles für Marketplace + Deals.
+/* CollectorCrypt – shared styles for marketplace + deals.
  *
- * Aufbau:
- *   1. Reset/Tokens
- *   2. Header, Form-Controls, Tabs, View-Toggle
- *   3. Filter-Leiste
- *   4. Card-Grid (Karten- und Listen-Ansicht)
- *   5. Deals-spezifisch (Stats-Bar, Status-Pills, Spinner)
- *   6. Pager + Hilfsklassen
+ * Layout:
+ *   1. Reset / tokens
+ *   2. Header, form controls, tabs, view toggle
+ *   3. Filter bar
+ *   4. Card grid (card and list view)
+ *   5. Deals-specific (stats bar, status pills, spinner)
+ *   6. Pager + helper classes
  */
 
-/* 1. Reset / Tokens ------------------------------------------------------- */
+/* 1. Reset / tokens ------------------------------------------------------- */
 :root {
   color-scheme: dark;
   --bg: #0e0e12;
@@ -123,7 +123,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .panel { display: none; }
 .panel.active { display: block; }
 
-/* 3. Filter-Leiste ------------------------------------------------------- */
+/* 3. Filter bar --------------------------------------------------------- */
 .filters {
   margin-top: .6rem;
   padding: .6rem;
@@ -169,7 +169,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .filters .actions { display: flex; gap: .4rem; margin-left: auto; }
 .filters .reset { background: #2a2a36; }
 
-/* 4. Card-Grid ----------------------------------------------------------- */
+/* 4. Card grid ---------------------------------------------------------- */
 .grid {
   display: grid;
   gap: .9rem;
@@ -226,7 +226,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 }
 .cc-link:hover { background: #22222e; }
 
-/* Insured-/Deal-Footer pro Karte */
+/* Insured / deal footer per card */
 .pc {
   border-top: 1px solid var(--border);
   padding: .45rem .8rem .65rem;
@@ -242,7 +242,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .pc-delta-down { color: var(--good); }
 .pc-loading    { color: #666; font-style: italic; }
 
-/* Observe-Button (Card-Overlay) */
+/* Observe button (card overlay) */
 .obs-btn {
   position: absolute;
   top: .4rem;
@@ -266,7 +266,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 
 .card.hidden { display: none; }
 
-/* Listen-Ansicht ------------------------------------------------------- */
+/* List view ----------------------------------------------------------- */
 .grid.view-list { grid-template-columns: 1fr; gap: .4rem; }
 .grid.view-list .card { flex-direction: row; align-items: stretch; min-height: 72px; }
 .grid.view-list .card .detail {
@@ -302,7 +302,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 }
 .grid.view-list .obs-btn { position: static; align-self: center; margin: .4rem; }
 
-/* 5. Deals-spezifisch --------------------------------------------------- */
+/* 5. Deals-specific ----------------------------------------------------- */
 .stats {
   padding: .75rem 1.5rem;
   color: #aaa;
@@ -341,7 +341,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Deal-Karten: Delta-Hervorhebung */
+/* Deal cards: delta highlight */
 .deal-pct { font-weight: 700; }
 .deal-pct.good { color: var(--good); }
 .deal-pct.mid  { color: var(--warn); }
@@ -353,7 +353,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   to   { box-shadow: 0 0 0 0 transparent inset; }
 }
 
-/* 6. Sonstiges ---------------------------------------------------------- */
+/* 6. Miscellaneous ------------------------------------------------------ */
 .empty, .error { padding: 1.5rem; color: #aaa; }
 .error { color: #f77; }
 

@@ -1,11 +1,11 @@
-"""CollectorCrypt-Viewer – modulare Anwendung.
+"""CollectorCrypt viewer – modular application.
 
-Pakete:
-    config     – Konstanten (URLs, Timeouts, Retry-Policy).
-    normalize  – Parsing & Formatierung der API-Karten in unser UI-Schema.
-    api        – HTTP-Client für die CollectorCrypt-/Coinbase-APIs (+Cache).
-    scanner    – Hintergrund-Scanner für die Deals-Suche.
-    web        – Flask-App-Factory + Routen.
+Packages:
+    config     – Constants (URLs, timeouts, retry policy).
+    normalize  – Parses & formats API cards into our UI schema.
+    api        – HTTP client for the CollectorCrypt / Coinbase APIs (+cache).
+    scanner    – Background scanner for the deals search.
+    web        – Flask app factory + routes.
 """
 
 from .web import create_app

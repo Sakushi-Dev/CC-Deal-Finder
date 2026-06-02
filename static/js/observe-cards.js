@@ -1,18 +1,18 @@
-/* Observe-Logik für Card-Grids: Button-Wiring, Snapshot-Mapping, Live-Refresh.
+/* Observe logic for card grids: button wiring, snapshot mapping, live refresh.
  *
- * Verwendung pro Seite:
+ * Usage per page:
  *   CCObserveCards.wireGrid(gridEl, {
- *     emptyEl, countEl,           // optional UI-Elemente
- *     onSnapshot,                 // (card) -> snap (Datenextraktion)
- *     renderObserveCard(snap),    // erstellt DOM-Element fürs Observe-Grid
- *     refreshFromApi: true,       // /api/card/<nft> Aufruf für Live-Daten
+ *     emptyEl, countEl,           // optional UI elements
+ *     onSnapshot,                 // (card) -> snap (data extraction)
+ *     renderObserveCard(snap),    // creates DOM element for the observe grid
+ *     refreshFromApi: true,       // calls /api/card/<nft> for live data
  *   })
  */
 (function () {
   const { escapeHtml, fmtPrice } = window.CC;
   const Observe = window.CCObserve;
 
-  /** Standard-Snapshot aus `data-*`-Attributen einer Card. */
+  /** Default snapshot built from a card's `data-*` attributes. */
   function defaultSnapshot(card) {
     const d = card.dataset;
     return {
@@ -28,13 +28,13 @@
     };
   }
 
-  /** Standard-Renderer: identische Card-Optik wie Marketplace. */
+  /** Default renderer: identical card look as the marketplace. */
   function defaultRender(snap) {
     const el = document.createElement('div');
     el.className = 'card';
     Object.entries(snap).forEach(([k, v]) => { el.dataset[k] = v || ''; });
     el.innerHTML = `
-      <button type="button" class="obs-btn on" title="observe entfernen">observe</button>
+      <button type="button" class="obs-btn on" title="remove observe">observe</button>
       <div class="detail">
         ${snap.image ? `<img src="${snap.image}" alt="" loading="lazy">` : ''}
         <div class="body">
@@ -52,7 +52,7 @@
     return el;
   }
 
-  /** Mapping API-Response (/api/card) → Snapshot. */
+  /** Maps API response (/api/card) → snapshot. */
   function snapFromApi(c) {
     return {
       nft: c.nft, title: c.name, category: c.category,
@@ -105,7 +105,7 @@
       });
     }
 
-    /** Buttons in einem (Quell-)Grid verkabeln + Status anzeigen. */
+    /** Wire buttons in a (source) grid + show status. */
     function wireCards(cards) {
       cards.forEach(card => {
         const id = cardId(card);
@@ -115,7 +115,7 @@
       });
     }
 
-    /** Observe-Grid neu aufbauen. */
+    /** Rebuild the observe grid. */
     function rebuild() {
       gridEl.innerHTML = '';
       const keys = Observe.keys();
@@ -137,7 +137,7 @@
       if (opts.refreshFromApi) refreshFromApi();
     }
 
-    /** Karten frisch von der CC-API holen (Preis/Insured aktualisieren). */
+    /** Fetch cards fresh from the CC API (refresh price/insured). */
     function refreshFromApi() {
       gridEl.querySelectorAll('.card').forEach(card => {
         const nft = card.dataset.nft;
@@ -147,7 +147,7 @@
           .then(data => {
             if (!data || !data.found || !data.card) {
               const pc = card.querySelector('.pc');
-              if (pc) pc.innerHTML = '<span style="color:#888;">Nicht mehr gelistet</span>';
+              if (pc) pc.innerHTML = '<span style="color:#888;">No longer listed</span>';
               return;
             }
             const snap = snapFromApi(data.card);
@@ -169,7 +169,7 @@
             }
             if (window.CCInsured) window.CCInsured.renderForCard(card);
           })
-          .catch(() => { /* offline: bestehende Anzeige bleibt */ });
+          .catch(() => { /* offline: keep existing display */ });
       });
     }
 

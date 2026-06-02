@@ -1,7 +1,7 @@
-/* Insured-Value-Anzeige im Karten-Footer (.pc).
+/* Insured value display in the card footer (.pc).
  *
- * Eine Karte muss `data-insured` und (optional) `data-price` setzen.
- * `renderForCard(card)` ist idempotent – mehrfach aufrufbar.
+ * A card must set `data-insured` and (optionally) `data-price`.
+ * `renderForCard(card)` is idempotent – can be called multiple times.
  */
 (function () {
   const { parseNum, fmtUSD } = window.CC;
@@ -14,11 +14,11 @@
     const ccPrice = parseNum(card.dataset.price);
 
     if (!insured) {
-      el.innerHTML = '<span style="color:#888;">Kein Insured Value</span>';
+      el.innerHTML = '<span style="color:#888;">No insured value</span>';
       return;
     }
 
-    // Vergleichspreis bevorzugt der echte USD-Asking-Preis (Deals); sonst Listing-Preis.
+    // Comparison price prefers the real USD asking price (deals); otherwise listing price.
     const ask = askUsd != null ? askUsd : ccPrice;
     let delta = '';
     if (ask != null) {

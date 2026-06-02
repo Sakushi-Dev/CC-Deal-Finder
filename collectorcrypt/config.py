@@ -1,4 +1,4 @@
-"""Konstanten der Anwendung (URLs, Limits, Retry-Policy)."""
+"""Application constants (URLs, limits, retry policy)."""
 from __future__ import annotations
 
 API_BASE = "https://api.collectorcrypt.com"
@@ -13,12 +13,12 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-# Marketplace-Listing
+# Marketplace listing
 DEFAULT_STEP = 30
 MAX_STEP = 100
 MIN_STEP = 6
 
-# Scanner (Deals)
+# Scanner (deals)
 SCAN_STEP = 100
 
 # HTTP
@@ -27,5 +27,5 @@ CACHE_TTL_SECONDS = 30
 RETRY_DELAYS = (3, 10, 30)
 RETRY_STATUSES = frozenset({403, 429, 502, 503, 504})
 
-# Erlaubte Sprachen, sonst Fallback "English"
+# Allowed languages, otherwise fallback "English"
 LANGUAGE_TOKENS = ("Japanese", "Korean", "Chinese", "Spanish")

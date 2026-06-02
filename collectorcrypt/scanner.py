@@ -1,11 +1,11 @@
-"""Hintergrund-Scanner für die Deals-Suche.
+"""Background scanner for the deals search.
 
-Eine :class:`ScanManager`-Instanz lebt im App-Kontext und kapselt:
+A :class:`ScanManager` instance lives in the app context and encapsulates:
 
-* Lebenszyklus des Worker-Threads (start/pause/resume/stop).
-* Threadsicheren Zugriff auf den Live-Status (für `/deals/status`).
-* Die eigentliche Match-Logik (Preisspanne, Sticker-Ausschluss,
-  Insured-Value-Vergleich).
+* Worker thread lifecycle (start/pause/resume/stop).
+* Thread-safe access to the live state (for `/deals/status`).
+* The actual match logic (price range, sticker exclusion,
+  insured-value comparison).
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ _INITIAL_STATE: dict[str, Any] = {
 
 
 class ScanManager:
-    """Verwaltet einen einzelnen, optional pausierbaren Scan-Worker."""
+    """Manages a single, optionally pausable scan worker."""
 
     def __init__(self, client: CCClient) -> None:
         self._client = client
@@ -55,7 +55,7 @@ class ScanManager:
         self._state["failed_pages"] = []
 
     # ------------------------------------------------------------------ #
-    # Steuerung
+    # Controls
     # ------------------------------------------------------------------ #
     def start(self, min_usd: float, max_usd: float, order: str = "shuffle") -> bool:
         with self._lock:
@@ -97,7 +97,7 @@ class ScanManager:
                 self._state["updated_at"] = time.time()
 
     def snapshot(self) -> dict[str, Any]:
-        """Threadsicherer Snapshot, Deals nach % desc sortiert."""
+        """Thread-safe snapshot, deals sorted by % desc."""
         with self._lock:
             deals_sorted = sorted(self._state["deals"],
                                   key=lambda d: d["pct"], reverse=True)
@@ -111,7 +111,7 @@ class ScanManager:
             return self._state["stop_requested"]
 
     def _wait_while_paused(self) -> bool:
-        """Liefert ``True``, wenn der Scan abgebrochen werden soll."""
+        """Returns ``True`` if the scan should be aborted."""
         while True:
             with self._lock:
                 if self._state["stop_requested"]:
@@ -130,7 +130,7 @@ class ScanManager:
             sol_rate = self._client.fetch_sol_usd()
         except (requests.RequestException, ValueError, KeyError) as exc:
             with self._lock:
-                self._state["error"] = f"Coinbase-Fehler: {exc}"
+                self._state["error"] = f"Coinbase error: {exc}"
                 self._state["running"] = False
                 self._state["done"] = True
                 self._state["updated_at"] = time.time()
@@ -160,7 +160,7 @@ class ScanManager:
                         )
                     except requests.RequestException as exc:
                         with self._lock:
-                            self._state["last_page_error"] = f"Seite {page}: {exc}"
+                            self._state["last_page_error"] = f"Page {page}: {exc}"
                             self._state["failed_pages"].append(page)
                             self._state["updated_at"] = time.time()
                         time.sleep(1.0)
@@ -175,7 +175,7 @@ class ScanManager:
                     break
         except requests.RequestException as exc:
             with self._lock:
-                self._state["error"] = f"Marketplace-Fehler: {exc}"
+                self._state["error"] = f"Marketplace error: {exc}"
         finally:
             with self._lock:
                 self._state["running"] = False
@@ -210,7 +210,7 @@ class ScanManager:
 
 
 # --------------------------------------------------------------------------- #
-# Helfer
+# Helpers
 # --------------------------------------------------------------------------- #
 def _is_sticker(card: dict[str, Any]) -> bool:
     name = (card.get("name") or "").lower()
@@ -226,7 +226,7 @@ def _build_deal(n: dict[str, Any], ask_usd: float, market_usd: float,
         "ask_usd": ask_usd, "market_usd": market_usd,
         "delta": delta, "pct": pct,
         "currency": n["currency"], "price_raw": n["price_raw"],
-        # Zusatzfelder für Lightbox + Observe-Snapshot:
+        # Extra fields for lightbox + observe snapshot:
         "nft": n["nft"], "blockchain": n["blockchain"], "year": n["year"],
         "image_full": n["image_full"], "image_back": n["image_back"],
         "card_name": n["card_name"], "card_number": n["card_number"],

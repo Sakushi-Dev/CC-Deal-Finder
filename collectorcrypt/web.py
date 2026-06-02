@@ -1,8 +1,8 @@
-"""Flask-App-Factory + Routen.
+"""Flask app factory + routes.
 
-Zwei Blueprints:
-    views   – HTML-Seiten (`/`, `/deals`).
-    api     – JSON-Endpoints (`/api/card/<nft>`, `/deals/*`).
+Two blueprints:
+    views   – HTML pages (`/`, `/deals`).
+    api     – JSON endpoints (`/api/card/<nft>`, `/deals/*`).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _NFT_RE = re.compile(r"[A-Za-z0-9_-]{20,80}")
 
 
 # --------------------------------------------------------------------------- #
-# App-Factory
+# App factory
 # --------------------------------------------------------------------------- #
 def create_app() -> Flask:
     app = Flask(
@@ -50,7 +50,7 @@ def _scanner() -> ScanManager:
 
 
 # --------------------------------------------------------------------------- #
-# HTML-Seiten
+# HTML pages
 # --------------------------------------------------------------------------- #
 views_bp = Blueprint("views", __name__)
 
@@ -74,7 +74,7 @@ def index():
         total = int(data.get("total") or 0)
         total_pages = int(data.get("totalPages") or math.ceil(found / step) or 1)
     except requests.RequestException as exc:
-        error = f"API-Fehler: {exc}"
+        error = f"API error: {exc}"
 
     return render_template(
         "index.html",
@@ -89,7 +89,7 @@ def deals():
 
 
 # --------------------------------------------------------------------------- #
-# JSON-API
+# JSON API
 # --------------------------------------------------------------------------- #
 api_bp = Blueprint("api", __name__)
 
@@ -98,7 +98,7 @@ api_bp = Blueprint("api", __name__)
 def api_card(nft: str):
     nft = (nft or "").strip()
     if not nft or not _NFT_RE.fullmatch(nft):
-        return jsonify({"error": "ungültige nftAddress"}), 400
+        return jsonify({"error": "invalid nftAddress"}), 400
     try:
         raw = _client().fetch_card(nft)
         if raw is None:
@@ -114,9 +114,9 @@ def deals_start():
         min_usd = float(request.form.get("min", ""))
         max_usd = float(request.form.get("max", ""))
     except ValueError:
-        return jsonify({"ok": False, "error": "Ungültige Zahl."}), 400
+        return jsonify({"ok": False, "error": "Invalid number."}), 400
     if min_usd > max_usd or min_usd < 0:
-        return jsonify({"ok": False, "error": "Ungültige Preisspanne."}), 400
+        return jsonify({"ok": False, "error": "Invalid price range."}), 400
     order = (request.form.get("order") or "shuffle").strip().lower()
     if order not in ("shuffle", "newest"):
         order = "shuffle"

@@ -1,4 +1,4 @@
-{# Wiederverwendbare Marketplace-Karte. Erwartet `c` = normalisiertes Dict. #}
+{# Reusable marketplace card. Expects `c` = normalized dict. #}
 <div class="card"
      data-title="{{ c.name|e }}"
      data-category="{{ c.category|e }}"
@@ -36,7 +36,7 @@
       <div class="price-row">
         <span class="price">{{ c.price }}<span class="currency">{{ c.currency }}</span></span>
         <a class="cc-link" href="{{ c.url }}" target="_blank" rel="noopener"
-           title="Auf CollectorCrypt öffnen" onclick="event.stopPropagation()">↗</a>
+           title="Open on CollectorCrypt" onclick="event.stopPropagation()">↗</a>
       </div>
     </div>
   </div>

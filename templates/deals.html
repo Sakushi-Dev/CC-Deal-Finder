@@ -5,11 +5,11 @@
 <header>
   <h1>
     <a class="nav" href="/">← Marketplace</a>
-    Deals-Scanner
+    Deals scanner
   </h1>
   <div class="meta">
-    Live-Vergleich CollectorCrypt-Verkaufspreis (USDC/SOL→USD) vs.
-    CC-Insured-Value. Anzeige aktualisiert alle 5 Sekunden.
+    Live comparison of CollectorCrypt sale price (USDC/SOL→USD) vs.
+    CC insured value. Display refreshes every 5 seconds.
   </div>
 
   <form id="scanForm" class="controls">
@@ -17,23 +17,23 @@
       value="{{ '%.0f' % state.min_usd if state.min_usd is not none else '' }}" required></label>
     <label>Max USD <input type="number" name="max" step="1" min="0" id="maxInput"
       value="{{ '%.0f' % state.max_usd if state.max_usd is not none else '' }}" required></label>
-    <label>Reihenfolge
+    <label>Order
       <select name="order" id="orderInput">
-        <option value="shuffle"{% if state.order != 'newest' %} selected{% endif %}>Durcheinander</option>
-        <option value="newest"{% if state.order == 'newest' %} selected{% endif %}>Neueste zuerst</option>
+        <option value="shuffle"{% if state.order != 'newest' %} selected{% endif %}>Shuffle</option>
+        <option value="newest"{% if state.order == 'newest' %} selected{% endif %}>Newest first</option>
       </select>
     </label>
-    <button type="submit" id="scanBtn">Scan starten</button>
+    <button type="submit" id="scanBtn">Start scan</button>
     <button type="button" id="pauseBtn"  disabled>Pause</button>
-    <button type="button" id="resumeBtn" disabled>Fortsetzen</button>
+    <button type="button" id="resumeBtn" disabled>Resume</button>
     <button type="button" id="stopBtn"   disabled>Stop</button>
     <span id="solRate" class="meta"></span>
   </form>
 
   <div class="tabs">
-    <div class="view-toggle" role="group" aria-label="Ansicht">
-      <button type="button" data-view-cards class="active" title="Kartenansicht">▣ Karten</button>
-      <button type="button" data-view-list                  title="Listenansicht">☰ Liste</button>
+    <div class="view-toggle" role="group" aria-label="View">
+      <button type="button" data-view-cards class="active" title="Card view">▣ Cards</button>
+      <button type="button" data-view-list                  title="List view">☰ List</button>
     </div>
   </div>
 </header>
@@ -41,19 +41,19 @@
 <div id="errorBox" class="error" style="display:none;"></div>
 
 <div id="statsBar" class="stats" style="display:none;">
-  <span><span id="statusPill" class="status-pill status-idle">leer</span></span>
-  <span>Seite <b id="statPage">0</b>/<b id="statTotalPages">0</b></span>
-  <span>Gescannt: <b id="statScanned">0</b></span>
-  <span>In Spanne: <b id="statInRange">0</b></span>
-  <span>Treffer: <b id="statMatched">0</b></span>
-  <span>Spanne: <b id="statRange">–</b></span>
+  <span><span id="statusPill" class="status-pill status-idle">empty</span></span>
+  <span>Page <b id="statPage">0</b>/<b id="statTotalPages">0</b></span>
+  <span>Scanned: <b id="statScanned">0</b></span>
+  <span>In range: <b id="statInRange">0</b></span>
+  <span>Hits: <b id="statMatched">0</b></span>
+  <span>Range: <b id="statRange">–</b></span>
   <span class="meta" id="statUpdated"></span>
   <span class="meta" id="statPageErr" style="display:none;color:#f4a07d;"></span>
 </div>
 
 <div class="panel active">
   <div class="grid" id="grid-deals"></div>
-  <div id="deals-empty" class="empty">Preisspanne eingeben und Scan starten.</div>
+  <div id="deals-empty" class="empty">Enter a price range and start the scan.</div>
 </div>
 {% endblock %}
 

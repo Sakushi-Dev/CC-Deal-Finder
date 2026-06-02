@@ -1,4 +1,4 @@
-/* Persistenter Karten/Listen-Umschalter für alle .grid-Container der Seite. */
+/* Persistent card/list toggle for all .grid containers on the page. */
 (function () {
   const KEY = 'cc_view_v1';
 

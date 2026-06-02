@@ -1,59 +1,58 @@
-# CollectorCrypt – inoffizielle API-Notizen
+# CollectorCrypt – unofficial API notes
 
-> **Stand:** 2026-06-01 · Bundle `main.97af84c3de44d9b7884c.js`
+> **As of:** 2026-06-01 · Bundle `main.97af84c3de44d9b7884c.js`
 >
-> Diese Dokumentation ist **rein reverse-engineered** aus dem öffentlichen
-> Frontend-Bundle und ist nicht offiziell. Endpoints können sich jederzeit
-> ändern. Mit [tools/discover_endpoints.py](../tools/discover_endpoints.py)
-> kann die Liste neu generiert werden.
+> This documentation is **purely reverse-engineered** from the public
+> frontend bundle and is not official. Endpoints can change at any time.
+> Use [tools/discover_endpoints.py](../tools/discover_endpoints.py) to
+> regenerate the list.
 
-## Basis
+## Basics
 
 - **Base URL:** `https://api.collectorcrypt.com`
 - **Format:** JSON
-- **Auth:** ein Teil der Endpoints ist öffentlich (Marketplace-Listings),
-  andere brauchen ein Bearer-/Cookie-Token aus dem Privy-Login
-  (`/api/v1/...authenticate`). Ohne Token → `401 Unauthorized`.
-- **Frontend ↔ API:** Der React-SPA-Client kapselt alle Aufrufe in kleinen
-  Wrapper-Funktionen (`(0,x.Jt)(path)` = GET, `(0,x.bE)(path,body)` = POST/PUT).
-  Pfade aus dem Bundle werden relativ zur Base-URL aufgelöst.
+- **Auth:** Some endpoints are public (marketplace listings); others require
+  a bearer/cookie token from the Privy login (`/api/v1/...authenticate`).
+  Without a token → `401 Unauthorized`.
+- **Frontend ↔ API:** The React SPA client wraps every call in small
+  helper functions (`(0,x.Jt)(path)` = GET, `(0,x.bE)(path,body)` = POST/PUT).
+  Paths from the bundle are resolved relative to the base URL.
 
 ---
 
-## Bestätigte öffentliche Endpoints
+## Confirmed public endpoints
 
 ### `GET /marketplace`
 
-Liefert paginierte Listings für eine Kategorie. Diese App benutzt diesen
-Endpoint.
+Returns paginated listings for a category. This app uses this endpoint.
 
-**Query-Parameter**
+**Query parameters**
 
-| Name                  | Pflicht | Beispiel        | Beschreibung |
-|-----------------------|---------|-----------------|--------------|
-| `cardType`            | ja      | `Card`          | einer von `Card`, `Comic`, `ComicRaw`, `Game`, `Merch`, `Raw`, `Sealed` |
-| `page`                | ja      | `1`             | 1-basierter Seitenindex |
-| `step`                | ja      | `30`            | Karten pro Seite (im UI bis 100) |
-| `search`              | nein    | `charizard`     | Volltextsuche; `+`, `&`, `#` müssen URL-encoded werden |
-| `autographed`         | nein    | `true`          | nur signierte Karten |
-| `authenticated`       | nein    | `true`          | nur authentifizierte Karten |
-| `marketplaceStatus`   | nein    | `Listed,Sold`   | Komma-Liste; nur diese Listing-Stati |
-| `marketplaceTags`     | nein    | `Promo`         | Komma-Liste Tags |
-| `insuredValueMin`     | nein    | `100`           | Mindest-Versicherungswert (USD) |
-| `insuredValueMax`     | nein    | `1000`          | Max-Versicherungswert (USD) |
+| Name                  | Required | Example         | Description |
+|-----------------------|----------|-----------------|-------------|
+| `cardType`            | yes      | `Card`          | one of `Card`, `Comic`, `ComicRaw`, `Game`, `Merch`, `Raw`, `Sealed` |
+| `page`                | yes      | `1`             | 1-based page index |
+| `step`                | yes      | `30`            | cards per page (up to 100 in the UI) |
+| `search`              | no       | `charizard`     | full-text search; `+`, `&`, `#` must be URL-encoded |
+| `autographed`         | no       | `true`          | autographed cards only |
+| `authenticated`       | no       | `true`          | authenticated cards only |
+| `marketplaceStatus`   | no       | `Listed,Sold`   | comma list; only these listing statuses |
+| `marketplaceTags`     | no       | `Promo`         | comma list of tags |
+| `insuredValueMin`     | no       | `100`           | minimum insured value (USD) |
+| `insuredValueMax`     | no       | `1000`          | maximum insured value (USD) |
 
-**Beispiel**
+**Example**
 
 ```http
 GET https://api.collectorcrypt.com/marketplace?page=1&step=30&cardType=Card
 ```
 
-**Antwortform (gekürzt)**
+**Response shape (shortened)**
 
 ```jsonc
 {
-  "findTotal": 53300,        // Treffer in dieser Abfrage
-  "total":     69837,        // Karten der Kategorie insgesamt
+  "findTotal": 53300,        // hits for this query
+  "total":     69837,        // total cards in the category
   "totalPages": 1777,
   "cardsQtyByCategory": { "Pokemon": 45219, "One Piece": 4761, ... },
   "filterNFtCard": [
@@ -96,193 +95,193 @@ GET https://api.collectorcrypt.com/marketplace?page=1&step=30&cardType=Card
 }
 ```
 
-### Detailseiten (Frontend-Route)
+### Detail pages (frontend route)
 
 ```
 https://collectorcrypt.com/assets/solana/<nftAddress>
 ```
 
-Reine Frontend-URL. Datenquelle ist dieselbe API + RPC-Reads gegen Solana.
+Pure frontend URL. The data source is the same API + RPC reads against Solana.
 
 ---
 
-## Endpoint-Registries aus dem Bundle
+## Endpoint registries from the bundle
 
-Folgende Pfade sind **als String-Literale** im Frontend hinterlegt. Methode
-(GET vs POST) ist dort nicht direkt sichtbar; sie wird über die jeweiligen
-Wrapper-Aufrufe bestimmt. Stand siehe oben.
+The following paths are **string literals** in the frontend. The method
+(GET vs POST) is not directly visible there; it depends on the wrapper call.
+See above for the snapshot date.
 
 ### Marketplace / Listings
 
-| Pfad                                       | Zweck (vermutet) |
-|--------------------------------------------|------------------|
-| `marketplace`                              | öffentliche Listings (s.o.) |
-| `marketplace/cards`                        | Frontend-Route (kein API) |
-| `marketplace/broadcast`                    | TX nach Sign-On-Chain broadcasten |
-| `marketplace/list`                         | Karte listen |
-| `marketplace/buy`                          | Kauf einleiten |
-| `marketplace/buy/card`                     | Kreditkarten-Checkout starten |
-| `marketplace/buy/card/pending`             | Status pending-Card-Payment |
-| `marketplace/cancel-listing`               | Listing zurückziehen |
-| `marketplace/make-offer`                   | Offer abgeben |
-| `marketplace/update-offer`                 | Offer ändern |
-| `marketplace/accept-offer`                 | Offer annehmen |
-| `marketplace/cancel-offer`                 | Offer zurückziehen |
-| `marketplace/update-listing`               | Preis o.ä. ändern |
-| `marketplace/cards/request-buyback-bulk`   | Buy-Back-Anfrage (mehrere Karten) |
-| `calcListingFee`                           | Listing-Gebühr berechnen |
-| `checkListingStatus`                       | Status eines On-Chain-Listings |
-| `createAcceptOfferTx` / `…V2`              | TX zum Annehmen einer Offer bauen |
+| Path                                       | Purpose (assumed) |
+|--------------------------------------------|-------------------|
+| `marketplace`                              | public listings (see above) |
+| `marketplace/cards`                        | frontend route (not an API) |
+| `marketplace/broadcast`                    | broadcast TX after on-chain sign |
+| `marketplace/list`                         | list a card |
+| `marketplace/buy`                          | initiate purchase |
+| `marketplace/buy/card`                     | start credit-card checkout |
+| `marketplace/buy/card/pending`             | pending card payment status |
+| `marketplace/cancel-listing`               | withdraw a listing |
+| `marketplace/make-offer`                   | submit an offer |
+| `marketplace/update-offer`                 | change an offer |
+| `marketplace/accept-offer`                 | accept an offer |
+| `marketplace/cancel-offer`                 | withdraw an offer |
+| `marketplace/update-listing`               | change price etc. |
+| `marketplace/cards/request-buyback-bulk`   | buy-back request (multiple cards) |
+| `calcListingFee`                           | compute listing fee |
+| `checkListingStatus`                       | status of an on-chain listing |
+| `createAcceptOfferTx` / `…V2`              | build TX for accepting an offer |
 
-### Konto / Karten
+### Account / Cards
 
-| Pfad                                | Zweck |
-|-------------------------------------|-------|
-| `cards`                             | Karten des eingeloggten Users (401 ohne Auth) |
-| `cards/{wallet}`                    | Karten eines Wallets |
-| `cards/{wallet}/external`           | externe NFTs des Wallets |
-| `cards/export`                      | CSV-Export der eigenen Karten |
-| `cards/update`                      | Karten-Metadaten aktualisieren |
-| `cards/publicNft`                   | öffentliche NFT-Karte |
-| `cards/refresh-card` / `refresh-cards` | Metadaten neu laden |
-| `cards/shipping`                    | Versandinfos für Karten |
-| `cards/gemrate-options`             | Grading-Optionen |
-| `cards/p2p/send` / `p2p/approve`    | P2P-Transfer einer Karte |
-| `account/{id}/activity`             | Activity-Feed |
-| `account/{id}/listings`             | Listings des Accounts |
-| `account/{id}/offers-made`          | abgegebene Offers |
-| `account/{id}/offers-received`      | erhaltene Offers |
-| `account/{id}/cards`                | Karten des Accounts |
-| `account/{id}/sealed`               | Sealed-Produkte |
-| `account/{id}/comics`               | Comics |
-| `account/{id}/comics-raw`           | Raw-Comics |
-| `account/{id}/merch`                | Merch |
-| `account/{id}/favorites`            | Favoriten |
-| `account/{id}/following`            | gefolgte Accounts |
+| Path                                | Purpose |
+|-------------------------------------|---------|
+| `cards`                             | cards of the logged-in user (401 without auth) |
+| `cards/{wallet}`                    | cards of a wallet |
+| `cards/{wallet}/external`           | external NFTs of the wallet |
+| `cards/export`                      | CSV export of your own cards |
+| `cards/update`                      | update card metadata |
+| `cards/publicNft`                   | public NFT card |
+| `cards/refresh-card` / `refresh-cards` | reload metadata |
+| `cards/shipping`                    | shipping info for cards |
+| `cards/gemrate-options`             | grading options |
+| `cards/p2p/send` / `p2p/approve`    | P2P transfer of a card |
+| `account/{id}/activity`             | activity feed |
+| `account/{id}/listings`             | account's listings |
+| `account/{id}/offers-made`          | offers made |
+| `account/{id}/offers-received`      | offers received |
+| `account/{id}/cards`                | account's cards |
+| `account/{id}/sealed`               | sealed products |
+| `account/{id}/comics`               | comics |
+| `account/{id}/comics-raw`           | raw comics |
+| `account/{id}/merch`                | merch |
+| `account/{id}/favorites`            | favorites |
+| `account/{id}/following`            | followed accounts |
 
-### Blockchain-Helfer
+### Blockchain helpers
 
-| Pfad                              | Zweck |
-|-----------------------------------|-------|
-| `blockchain/listing/{id}`         | On-Chain-Listing nachsynchronisieren |
-| `blockchain/offers/{id}`          | On-Chain-Offers nachsynchronisieren |
-| `blockchain/{chain}/burn/create`  | Burn-TX vorbereiten |
-| `blockchain/{chain}/burn`         | Burn ausführen |
-| `blockchain/{chain}/pay/card/confirm` | Card-Payment bestätigen |
-| `blockchain/checkout` / `…/estimate`  | Checkout-TX bauen / schätzen |
-| `blockchain/prepay`               | Prepay-Flow |
+| Path                              | Purpose |
+|-----------------------------------|---------|
+| `blockchain/listing/{id}`         | re-sync on-chain listing |
+| `blockchain/offers/{id}`          | re-sync on-chain offers |
+| `blockchain/{chain}/burn/create`  | prepare burn TX |
+| `blockchain/{chain}/burn`         | execute burn |
+| `blockchain/{chain}/pay/card/confirm` | confirm card payment |
+| `blockchain/checkout` / `…/estimate`  | build / estimate checkout TX |
+| `blockchain/prepay`               | prepay flow |
 
 ### Buy / Pay
 
-| Pfad                       | Zweck |
-|----------------------------|-------|
-| `buy/card/prepare`         | Card-Checkout vorbereiten |
-| `buy/card/checkout`        | Card-Checkout durchführen |
-| `buy/card/token-checkout`  | Token-basierter Checkout |
-| `buy/card/confirm`         | Bestätigen |
-| `buy/card/cancel`          | Abbrechen |
-| `pay/card/confirm`         | Zahlung bestätigen |
-| `pay/card`                 | Zahlungs-Eintrag erzeugen |
-| `buy/send`                 | Versand auslösen |
+| Path                       | Purpose |
+|----------------------------|---------|
+| `buy/card/prepare`         | prepare card checkout |
+| `buy/card/checkout`        | run card checkout |
+| `buy/card/token-checkout`  | token-based checkout |
+| `buy/card/confirm`         | confirm |
+| `buy/card/cancel`          | cancel |
+| `pay/card/confirm`         | confirm payment |
+| `pay/card`                 | create payment entry |
+| `buy/send`                 | trigger shipping |
 
 ### Grading
 
-| Pfad                                                | Zweck |
-|-----------------------------------------------------|-------|
-| `grading/submissions`                               | Liste / Erstellen |
-| `grading/submissions/{id}`                          | Detail |
-| `grading/submissions/{id}/cards`                    | Karten hinzufügen |
-| `grading/submissions/{id}/cards/{cardId}`           | Karte entfernen |
-| `grading/submissions/{id}/offer`                    | Offer einsehen |
-| `grading/submissions/{id}/offer/accept`             | Offer annehmen |
-| `grading/submissions/{id}/outcome`                  | Outcome wählen |
-| `grading/submissions/{id}/submit`                   | absenden |
-| `grading/submissions/{id}/invoice`                  | Rechnung |
-| `grading/submissions/partners`                      | Partner-Liste |
-| `grading/submissions/photo-upload`                  | Foto-Upload |
+| Path                                                | Purpose |
+|-----------------------------------------------------|---------|
+| `grading/submissions`                               | list / create |
+| `grading/submissions/{id}`                          | detail |
+| `grading/submissions/{id}/cards`                    | add cards |
+| `grading/submissions/{id}/cards/{cardId}`           | remove card |
+| `grading/submissions/{id}/offer`                    | view offer |
+| `grading/submissions/{id}/offer/accept`             | accept offer |
+| `grading/submissions/{id}/outcome`                  | select outcome |
+| `grading/submissions/{id}/submit`                   | submit |
+| `grading/submissions/{id}/invoice`                  | invoice |
+| `grading/submissions/partners`                      | partner list |
+| `grading/submissions/photo-upload`                  | photo upload |
 
 ### Shipping / Redeem
 
-| Pfad                                  | Zweck |
-|---------------------------------------|-------|
-| `shipping-address`                    | Adressliste |
-| `shipping-address/create` / `update`  | Adresse anlegen / ändern |
-| `shipping/cancel`                     | Shipping abbrechen |
-| `shipping/status-filter`              | Filter-Optionen |
-| `shipping/{id}/upload-expected`       | erwartete Karten upload |
-| `shipping/{id}/vault-items`           | Vault-Items zur Sendung |
-| `outbound-shipment/{id}`              | Outbound-Detail |
-| `outbound-shipment/export`            | Export |
-| `redeem/prepare`                      | Redeem vorbereiten |
-| `redeem/resume/{token}`               | fortsetzen |
-| `redeem/estimate`                     | Kosten schätzen |
+| Path                                  | Purpose |
+|---------------------------------------|---------|
+| `shipping-address`                    | address list |
+| `shipping-address/create` / `update`  | create / change address |
+| `shipping/cancel`                     | cancel shipping |
+| `shipping/status-filter`              | filter options |
+| `shipping/{id}/upload-expected`       | upload expected cards |
+| `shipping/{id}/vault-items`           | vault items for shipment |
+| `outbound-shipment/{id}`              | outbound detail |
+| `outbound-shipment/export`            | export |
+| `redeem/prepare`                      | prepare redeem |
+| `redeem/resume/{token}`               | resume |
+| `redeem/estimate`                     | estimate cost |
 
 ### Hidden Offers / Follows / Blocks / Notifications
 
-| Pfad                                  | Zweck |
-|---------------------------------------|-------|
-| `hidden-offers/{id}`                  | Offer ein-/ausblenden |
-| `follows/{userId}/following`          | folgen |
-| `follows/{userId}/status`             | Follow-Status |
-| `blocks` / `blocks/{id}`              | Blockliste |
-| `blocks?page=&limit=`                 | paginiert |
-| `blocks/{id}/status`                  | Block-Status |
-| `notifications`                       | Liste |
+| Path                                  | Purpose |
+|---------------------------------------|---------|
+| `hidden-offers/{id}`                  | hide/show offer |
+| `follows/{userId}/following`          | follow |
+| `follows/{userId}/status`             | follow status |
+| `blocks` / `blocks/{id}`              | block list |
+| `blocks?page=&limit=`                 | paginated |
+| `blocks/{id}/status`                  | block status |
+| `notifications`                       | list |
 
 ### Auth (Privy)
 
-| Pfad                                          | Zweck |
-|-----------------------------------------------|-------|
-| `auth/confirmEmail/{token}`                   | E-Mail bestätigen |
-| `auth/privyHydrate`                           | Sessionhydration |
-| `auth/intercom-token`                         | Intercom-Token |
-| `api/v1/users/me`                             | Profil |
-| `api/v1/users/me/accept_terms`                | AGB akzeptieren |
-| `api/v1/oauth/init` / `authenticate` / `link` / `unlink` / `transfer` | OAuth-Flow |
-| `api/v1/passkeys/authenticate(/init)`         | Passkey-Login |
-| `api/v1/passwordless/authenticate`            | Magic-Link |
-| `api/v1/passwordless_sms/authenticate`        | SMS-Login |
+| Path                                          | Purpose |
+|-----------------------------------------------|---------|
+| `auth/confirmEmail/{token}`                   | confirm email |
+| `auth/privyHydrate`                           | session hydration |
+| `auth/intercom-token`                         | Intercom token |
+| `api/v1/users/me`                             | profile |
+| `api/v1/users/me/accept_terms`                | accept terms |
+| `api/v1/oauth/init` / `authenticate` / `link` / `unlink` / `transfer` | OAuth flow |
+| `api/v1/passkeys/authenticate(/init)`         | passkey login |
+| `api/v1/passwordless/authenticate`            | magic link |
+| `api/v1/passwordless_sms/authenticate`        | SMS login |
 | `api/v1/siwe/authenticate`                    | Sign-In-With-Ethereum |
 | `api/v1/siws/authenticate`                    | Sign-In-With-Solana |
-| `api/v1/farcaster/authenticate` (+ `v2`)      | Farcaster-Login |
-| `api/v1/telegram/authenticate`                | Telegram-Login |
-| `api/v1/guest/authenticate`                   | Gast-Session |
-| `api/v1/custom_jwt_account/authenticate` / `link` | Custom-JWT |
-| `api/v1/recovery/oauth/init(/icloud)` / `authenticate` | Recovery-Flow |
-| `api/v1/plugins/moonpay_on_ramp/sign`         | Moonpay On-Ramp Sign |
+| `api/v1/farcaster/authenticate` (+ `v2`)      | Farcaster login |
+| `api/v1/telegram/authenticate`                | Telegram login |
+| `api/v1/guest/authenticate`                   | guest session |
+| `api/v1/custom_jwt_account/authenticate` / `link` | custom JWT |
+| `api/v1/recovery/oauth/init(/icloud)` / `authenticate` | recovery flow |
+| `api/v1/plugins/moonpay_on_ramp/sign`         | Moonpay on-ramp sign |
 
-### Sonstiges
+### Misc
 
-| Pfad                  | Zweck |
-|-----------------------|-------|
-| `contact`             | Feedback-Form |
-| `verify_nft_card`     | NFT-Karte verifizieren |
-| `users/info`          | öffentliche Userinfos |
-| `users/invite`        | Invite erstellen |
-| `users/invite-swap`   | Invite swap |
-| `users/update`        | Profil ändern |
-| `users/update/email`  | E-Mail ändern |
-| `users/resetPassword` | Passwort zurücksetzen |
-| `users/cookies`       | Cookie-Settings |
-| `all-users`           | Userverzeichnis (Admin?) |
+| Path                  | Purpose |
+|-----------------------|---------|
+| `contact`             | feedback form |
+| `verify_nft_card`     | verify NFT card |
+| `users/info`          | public user info |
+| `users/invite`        | create invite |
+| `users/invite-swap`   | invite swap |
+| `users/update`        | update profile |
+| `users/update/email`  | change email |
+| `users/resetPassword` | reset password |
+| `users/cookies`       | cookie settings |
+| `all-users`           | user directory (admin?) |
 
 ---
 
-## Wie aktualisieren?
+## How to update
 
-1. Aktuelle Bundle-URL aus dem HTML lesen
+1. Read the current bundle URL from the HTML
    (`<script src="/main.<hash>.js">`).
-2. Skript ausführen:
+2. Run the script:
 
    ```powershell
    python tools/discover_endpoints.py > endpoints.txt
    ```
 
-3. Diff mit dem letzten Stand prüfen, neue Pfade hier in der Tabelle ergänzen.
-4. Zum Bestätigen, dass ein Pfad öffentlich ist, einen `GET` mit
-   `User-Agent`-Header probieren (z.B. via `python -c "import requests; …"`).
-   Antwortcodes:
-   - `200` → Antwort prüfen
-   - `400` → Pfad existiert, Parameter fehlen/falsch
-   - `401` → Auth nötig
-   - `404` → kein GET (oft POST-only) oder Pfad falsch
+3. Diff against the previous list, add new paths to the table above.
+4. To confirm whether a path is public, try a `GET` with a `User-Agent`
+   header (e.g. via `python -c "import requests; …"`).
+   Response codes:
+   - `200` → inspect the response
+   - `400` → path exists, parameters missing/wrong
+   - `401` → auth required
+   - `404` → no GET (often POST-only) or path is wrong

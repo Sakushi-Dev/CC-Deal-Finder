@@ -3,42 +3,42 @@
 
 {% block body %}
 <header>
-  <h1>CollectorCrypt Marketplace &mdash; Karten
-    <a href="/deals" class="nav" style="font-size:.85rem;margin-left:1rem;">Deals-Scanner →</a>
+  <h1>CollectorCrypt Marketplace &mdash; Cards
+    <a href="/deals" class="nav" style="font-size:.85rem;margin-left:1rem;">Deals scanner →</a>
   </h1>
   <div class="meta">
     {% if found %}
-      {{ found }} Treffer{% if total_pages %} · Seite {{ page }} / {{ total_pages }}{% endif %}
+      {{ found }} hits{% if total_pages %} · Page {{ page }} / {{ total_pages }}{% endif %}
     {% else %}
-      Keine Daten
+      No data
     {% endif %}
   </div>
 
   <form class="controls" method="get" action="/">
     <input type="search" name="q" value="{{ search }}"
-      placeholder="Suche (z.B. Charizard, Pikachu, PSA 10)">
-    <input type="number" name="step" min="6" max="100" value="{{ step }}" title="Karten pro Seite">
+      placeholder="Search (e.g. Charizard, Pikachu, PSA 10)">
+    <input type="number" name="step" min="6" max="100" value="{{ step }}" title="Cards per page">
     <input type="hidden" name="page" value="1">
-    <button type="submit">Suchen</button>
+    <button type="submit">Search</button>
   </form>
 
   <div class="tabs">
     <div class="tab active" data-panel="marketplace">Marketplace</div>
     <div class="tab" data-panel="observe">Observe <span class="count" id="obs-count">0</span></div>
-    <div class="view-toggle" role="group" aria-label="Ansicht">
-      <button type="button" data-view-cards class="active" title="Kartenansicht">▣ Karten</button>
-      <button type="button" data-view-list                  title="Listenansicht">☰ Liste</button>
+    <div class="view-toggle" role="group" aria-label="View">
+      <button type="button" data-view-cards class="active" title="Card view">▣ Cards</button>
+      <button type="button" data-view-list                  title="List view">☰ List</button>
     </div>
   </div>
 
   <div class="filters" id="filters">
     <div class="group">
       <label>Marketplace</label>
-      <select id="f-marketplace"><option value="">Alle</option></select>
+      <select id="f-marketplace"><option value="">All</option></select>
     </div>
     <div class="group">
       <label>Blockchain</label>
-      <select id="f-blockchain"><option value="">Alle</option></select>
+      <select id="f-blockchain"><option value="">All</option></select>
     </div>
     <div class="group">
       <label>Grade min</label>
@@ -51,7 +51,7 @@
     <div class="group">
       <label>Language</label>
       <select id="f-language">
-        <option value="">Alle</option>
+        <option value="">All</option>
         <option value="English">English</option>
         <option value="Japanese">Japanese</option>
         <option value="Korean">Korean</option>
@@ -60,15 +60,15 @@
       </select>
     </div>
     <div class="group">
-      <label>Preis min</label>
+      <label>Price min</label>
       <input type="number" id="f-price-min" step="any" min="0" placeholder="0">
     </div>
     <div class="group">
-      <label>Preis max</label>
+      <label>Price max</label>
       <input type="number" id="f-price-max" step="any" min="0" placeholder="∞">
     </div>
     <div class="group" style="flex:1; min-width:240px;">
-      <label>Categories (unabhängig)</label>
+      <label>Categories (independent)</label>
       <div class="cats" id="f-categories">
         <label><input type="checkbox" value="Pokemon"> Pokemon</label>
         <label><input type="checkbox" value="One Piece"> One Piece</label>
@@ -85,7 +85,7 @@
 </header>
 
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
-{% if not cards and not error %}<div class="empty">Keine Karten gefunden.</div>{% endif %}
+{% if not cards and not error %}<div class="empty">No cards found.</div>{% endif %}
 
 <div class="panel active" id="panel-marketplace">
   <div class="grid" id="grid-marketplace">
@@ -96,17 +96,17 @@
 <div class="panel" id="panel-observe">
   <div class="grid" id="grid-observe"></div>
   <div id="observe-empty" class="empty">
-    Noch keine Karten beobachtet. Klicke „observe“ auf einer Karte im Marketplace.
+    No cards observed yet. Click “observe” on a card in the marketplace.
   </div>
 </div>
 
 {% if total_pages > 1 %}
   <div class="pager">
     <a class="btn" href="?q={{ search }}&step={{ step }}&page={{ page-1 }}"
-       aria-disabled="{{ 'true' if page <= 1 else 'false' }}">&larr; Zurück</a>
-    <span>Seite {{ page }} / {{ total_pages }}</span>
+       aria-disabled="{{ 'true' if page <= 1 else 'false' }}">&larr; Back</a>
+    <span>Page {{ page }} / {{ total_pages }}</span>
     <a class="btn" href="?q={{ search }}&step={{ step }}&page={{ page+1 }}"
-       aria-disabled="{{ 'true' if page >= total_pages else 'false' }}">Weiter &rarr;</a>
+       aria-disabled="{{ 'true' if page >= total_pages else 'false' }}">Next &rarr;</a>
   </div>
 {% endif %}
 {% endblock %}

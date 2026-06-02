@@ -1,11 +1,11 @@
-"""Parsing/Formatting für CollectorCrypt-Karten.
+"""Parsing/formatting for CollectorCrypt cards.
 
-Kapselt alles, was wir an Roh-Karten der CC-API anwenden, bevor sie ins
-Frontend oder in den Scanner gehen:
+Encapsulates everything we apply to raw cards from the CC API before they
+go to the frontend or the scanner:
 
-* :func:`normalize_card` – Roh-Dict → einheitliches UI-Schema.
-* :func:`format_price`   – hübsche Preisdarstellung.
-* :func:`to_usd`         – Preis × Währung → USD (USDC/USD/SOL).
+* :func:`normalize_card` – raw dict → unified UI schema.
+* :func:`format_price`   – nicely formatted price string.
+* :func:`to_usd`         – price × currency → USD (USDC/USD/SOL).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 from .config import COLLECTORCRYPT_ASSET_URL, LANGUAGE_TOKENS
 
 # --------------------------------------------------------------------------- #
-# Regex-Konstanten – nur einmal kompilieren.
+# Regex constants – compile only once.
 # --------------------------------------------------------------------------- #
 _GRADING_TOKEN_RE = re.compile(
     r"\b("
@@ -35,12 +35,12 @@ _FULL_ART_RE = re.compile(r"\bFull\s*Art\b\s*", re.IGNORECASE)
 # Public API
 # --------------------------------------------------------------------------- #
 def normalize_card(card: dict[str, Any]) -> dict[str, Any]:
-    """Roh-Karte der CC-API in das einheitliche UI-Schema überführen."""
+    """Convert a raw CC API card into the unified UI schema."""
     listing = card.get("listing") or {}
     images = card.get("images") or {}
 
     grade_str = card.get("grade") or ""
-    item_name = card.get("itemName") or "Unbenannt"
+    item_name = card.get("itemName") or "Unnamed"
     set_name = card.get("set") or ""
     grading_company = card.get("gradingCompany") or ""
 
@@ -82,7 +82,7 @@ def normalize_card(card: dict[str, Any]) -> dict[str, Any]:
 
 
 def format_price(value: Any) -> str:
-    """Preise als String formatieren (`12,345` bzw. `12.5`)."""
+    """Format prices as a string (`12,345` or `12.5`)."""
     if value in (None, ""):
         return "—"
     try:
@@ -95,7 +95,7 @@ def format_price(value: Any) -> str:
 
 
 def to_usd(price: Any, currency: str, sol_rate: float) -> float | None:
-    """Preis in USD umrechnen. USDC/USD 1:1, SOL via aktuellem Spot."""
+    """Convert price to USD. USDC/USD 1:1, SOL via the current spot rate."""
     try:
         p = float(price)
     except (TypeError, ValueError):
@@ -109,7 +109,7 @@ def to_usd(price: Any, currency: str, sol_rate: float) -> float | None:
 
 
 # --------------------------------------------------------------------------- #
-# Interna
+# Internals
 # --------------------------------------------------------------------------- #
 def _parse_insured_value(value: Any) -> float | None:
     if value in (None, ""):
@@ -130,7 +130,7 @@ def _detect_language(*texts: str) -> str:
 
 
 def _parse_item_name(item_name: str, grading_company: str) -> tuple[str, str]:
-    """`(name_mit_hash, nummer)` – Name vom `#` bis vor Grading-Token."""
+    """`(name_with_hash, number)` – name from `#` up to the grading token."""
     if not item_name:
         return "", ""
     m = _GRADING_TOKEN_RE.search(item_name)

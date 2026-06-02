@@ -1,5 +1,5 @@
-/* Marketplace-Filterleiste (Marketplace, Blockchain, Grade, Language,
- * Preis, Categories) – persistent in localStorage.
+/* Marketplace filter bar (marketplace, blockchain, grade, language,
+ * price, categories) – persisted in localStorage.
  *
  *   CCFilters.init({ gridSelector, cardSelector })
  */

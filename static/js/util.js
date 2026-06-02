@@ -1,4 +1,4 @@
-/* Kleine, gemeinsam genutzte Helfer. */
+/* Small, shared helpers. */
 (function () {
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, ch => (
