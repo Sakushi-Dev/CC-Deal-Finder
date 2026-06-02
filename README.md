@@ -43,7 +43,7 @@
 
 ```powershell
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/Sakushi-Dev/CC-Deal-Finder.git
 cd CC-Deal-Finder
 
 # Create and activate a virtual environment
