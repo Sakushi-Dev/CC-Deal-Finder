@@ -1,17 +1,74 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}CollectorCrypt{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <script>
+    /* Apply theme before paint to avoid flash. */
+    (function () {
+      try {
+        var t = localStorage.getItem('cc_theme_v1') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
   {% block head_extra %}{% endblock %}
 </head>
 <body>
-  {% block body %}{% endblock %}
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>CollectorCrypt</span>
+      </div>
 
+      <nav class="sidenav" aria-label="Main">
+        <div class="navlbl">Navigate</div>
+        <a href="/"        class="nav-link" data-nav="marketplace">
+          <span class="ico">▣</span><span>Marketplace</span>
+        </a>
+        <a href="/deals"   class="nav-link" data-nav="deals">
+          <span class="ico">≡</span><span>Deals scanner</span>
+        </a>
+        <a href="/trader"  class="nav-link" data-nav="trader">
+          <span class="ico">⟳</span><span>Trading bot</span>
+        </a>
+        <a href="/profile" class="nav-link" data-nav="profile">
+          <span class="ico">◉</span><span>Profile</span>
+        </a>
+
+        <div class="navlbl" style="margin-top:.75rem;">Tools</div>
+        <a href="/#observe" id="nav-observe-link" class="nav-link" data-nav="observe">
+          <span class="ico">★</span><span>Observed</span>
+          <span class="badge" id="obs-count">0</span>
+        </a>
+      </nav>
+
+      <div class="spacer"></div>
+
+      <div class="sidebar-footer">
+        <div style="text-transform:uppercase;letter-spacing:.1em;">Theme</div>
+        <div class="theme-toggle" role="group" aria-label="Theme">
+          <button type="button" data-theme-set="dark"  class="active">Dark</button>
+          <button type="button" data-theme-set="light">Light</button>
+        </div>
+        <div style="margin-top:.4rem;opacity:.7;">v1 · minimal</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      {% block body %}{% endblock %}
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
   <script src="{{ url_for('static', filename='js/lightbox.js') }}"></script>
   <script src="{{ url_for('static', filename='js/util.js') }}"></script>
   <script src="{{ url_for('static', filename='js/observe-store.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/obs-badge.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/sol-rate.js') }}"></script>
   <script src="{{ url_for('static', filename='js/insured.js') }}"></script>
   <script src="{{ url_for('static', filename='js/observe-cards.js') }}"></script>
   <script src="{{ url_for('static', filename='js/view-toggle.js') }}"></script>

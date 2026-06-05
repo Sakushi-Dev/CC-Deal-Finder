@@ -17,7 +17,7 @@ from typing import Any, Iterable
 import requests
 
 from . import config
-from .api import CCClient
+from .api import CCClient, _sleep_with_abort
 from .normalize import normalize_card, to_usd
 
 
@@ -31,7 +31,8 @@ _INITIAL_STATE: dict[str, Any] = {
     "failed_pages": [],
     "min_usd": None,
     "max_usd": None,
-    "order": "shuffle",
+    "order": "newest",
+    "category": "",
     "sol_rate": None,
     "scanned": 0,
     "in_range": 0,
@@ -57,7 +58,8 @@ class ScanManager:
     # ------------------------------------------------------------------ #
     # Controls
     # ------------------------------------------------------------------ #
-    def start(self, min_usd: float, max_usd: float, order: str = "shuffle") -> bool:
+    def start(self, min_usd: float, max_usd: float, order: str = "newest",
+              category: str = "") -> bool:
         with self._lock:
             if self._state["running"]:
                 return False
@@ -66,14 +68,14 @@ class ScanManager:
                 "done": False, "error": None,
                 "last_page_error": None, "failed_pages": [],
                 "min_usd": min_usd, "max_usd": max_usd,
-                "order": order, "sol_rate": None,
+                "order": order, "category": category, "sol_rate": None,
                 "scanned": 0, "in_range": 0, "matched": 0,
                 "page": 0, "total_pages": 0,
                 "started_at": time.time(), "updated_at": time.time(),
                 "deals": [],
             })
         t = threading.Thread(target=self._worker,
-                             args=(min_usd, max_usd, order), daemon=True)
+                             args=(min_usd, max_usd, order, category), daemon=True)
         t.start()
         return True
 
@@ -125,7 +127,8 @@ class ScanManager:
             self._state.update(changes)
             self._state["updated_at"] = time.time()
 
-    def _worker(self, min_usd: float, max_usd: float, order: str) -> None:
+    def _worker(self, min_usd: float, max_usd: float, order: str,
+                 category: str = "") -> None:
         try:
             sol_rate = self._client.fetch_sol_usd()
         except (requests.RequestException, ValueError, KeyError) as exc:
@@ -139,7 +142,8 @@ class ScanManager:
 
         try:
             first = self._client.fetch_marketplace_page_with_retry(
-                1, config.SCAN_STEP, should_abort=self._stop_requested)
+                1, config.SCAN_STEP, should_abort=self._stop_requested,
+                category=category)
             total_pages = int(first.get("totalPages") or 1)
             rest = list(range(2, total_pages + 1))
             if order == "shuffle":
@@ -153,29 +157,41 @@ class ScanManager:
                 if page == 1:
                     raw = first_raw
                 else:
+                    # Wait between page fetches to avoid middleware blocking
+                    if not _sleep_with_abort(config.PAGE_DELAY_SECONDS,
+                                             self._stop_requested):
+                        break
                     try:
                         data = self._client.fetch_marketplace_page_with_retry(
                             page, config.SCAN_STEP,
                             should_abort=self._stop_requested,
+                            category=category,
                         )
-                    except requests.RequestException as exc:
+                    except Exception as exc:
                         with self._lock:
                             self._state["last_page_error"] = f"Page {page}: {exc}"
                             self._state["failed_pages"].append(page)
                             self._state["updated_at"] = time.time()
-                        time.sleep(1.0)
                         continue
                     raw = data.get("filterNFtCard") or []
                     total_pages = int(data.get("totalPages") or total_pages)
                 self._update(page=page, total_pages=total_pages)
                 if not raw:
                     continue
-                self._process_page(raw, min_usd, max_usd, sol_rate)
+                try:
+                    self._process_page(raw, min_usd, max_usd, sol_rate, category)
+                except Exception as exc:
+                    with self._lock:
+                        self._state["last_page_error"] = f"Page {page} (process): {exc}"
+                        self._state["updated_at"] = time.time()
                 if self._stop_requested():
                     break
         except requests.RequestException as exc:
             with self._lock:
                 self._state["error"] = f"Marketplace error: {exc}"
+        except Exception as exc:
+            with self._lock:
+                self._state["error"] = f"Unexpected error: {exc}"
         finally:
             with self._lock:
                 self._state["running"] = False
@@ -183,13 +199,16 @@ class ScanManager:
                 self._state["updated_at"] = time.time()
 
     def _process_page(self, raw: Iterable[dict], min_usd: float,
-                      max_usd: float, sol_rate: float) -> None:
+                      max_usd: float, sol_rate: float, category: str = "") -> None:
         for c in raw:
             if self._wait_while_paused():
                 return
             n = normalize_card(c)
             with self._lock:
                 self._state["scanned"] += 1
+            # Client-side category filter (API does not support it as a param)
+            if category and n.get("category", "").lower() != category.lower():
+                continue
             if _is_sticker(n):
                 continue
             ask_usd = to_usd(n["price_raw"], n["currency"], sol_rate)

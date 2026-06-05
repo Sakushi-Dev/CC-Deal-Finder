@@ -21,6 +21,7 @@
      data-image-full="{{ c.image_full or c.image or '' }}"
      data-image-back="{{ c.image_back or '' }}"
      data-cc-url="{{ c.url }}">
+  <span class="deal-badge" data-deal-badge>DEAL</span>
   <button type="button" class="obs-btn" title="observe">observe</button>
   <div class="detail">
     {% if c.image %}<img src="{{ c.image }}" alt="" loading="lazy">{% endif %}

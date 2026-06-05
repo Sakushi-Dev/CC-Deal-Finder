@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}CollectorCrypt – Trading bot{% endblock %}
+
+{% block body %}
+<div class="topbar">
+  <div class="row">
+    <div>
+      <div class="crumb">Tools</div>
+      <h1>Trading bot</h1>
+    </div>
+    <div class="meta" style="margin-left:auto;">
+      <span id="modePill" class="status-pill status-idle">dry-run</span>
+      · <span id="solRate" data-sol-rate></span>
+    </div>
+  </div>
+
+  <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+    Autonomous CC-only accumulation. Sizes buys against the wallet's available
+    USDC volume; splits volume between direct buys and offers. Simulation only —
+    no funds are spent in dry-run.
+  </div>
+
+  <form id="botControls" class="controls">
+    <button type="button" id="runBtn" class="primary">Run cycle now</button>
+    <label>Loop every
+      <input type="number" id="intervalInput" min="15" step="15" value="{{ loop_interval }}"> s
+    </label>
+    <button type="button" id="startLoopBtn">Start loop</button>
+    <button type="button" id="pauseBtn"  disabled>Pause</button>
+    <button type="button" id="resumeBtn" disabled>Resume</button>
+    <button type="button" id="stopBtn"   disabled>Stop loop</button>
+    <button type="button" id="settingsToggle" style="margin-left:auto;">⚙ Settings</button>
+  </form>
+
+  <form id="demoControls" class="controls">
+    <span class="meta" style="font-family:inherit;">Demo mode</span>
+    <label>Simulate volume
+      <input type="number" id="demoVolume" min="1" step="50" value="1000" placeholder="USDC"> USDC
+    </label>
+    <button type="button" id="demoBtn">Simulate</button>
+    <span id="demoMsg" class="meta"></span>
+  </form>
+
+  <div class="tabs">
+    <button type="button" class="tab active" data-tab="overview">Overview</button>
+    <button type="button" class="tab" data-tab="plan">Planned orders</button>
+    <button type="button" class="tab" data-tab="history">History</button>
+  </div>
+</div>
+
+<div id="errorBox" class="error" style="display:none;"></div>
+
+<!-- Settings drawer -->
+<div id="settingsPanel" class="filters" style="display:none;flex-direction:column;">
+  <div class="meta" style="font-family:inherit;color:var(--text-muted);width:100%;">
+    These override your <code>.env</code> at runtime (saved locally to
+    <code>trader_settings.json</code>). The private key and live switch stay in
+    <code>.env</code> and cannot be changed here.
+  </div>
+  <form id="settingsForm" class="trader-settings">
+    {% for f in settings %}
+    <div class="group" title="{{ f.help }}">
+      <label for="set_{{ f.env }}">{{ f.label }}</label>
+      {% if f.type == 'number' %}
+      <input type="number" id="set_{{ f.env }}" name="{{ f.env }}"
+             value="{{ f.value }}"
+             {% if f.min is defined %}min="{{ f.min }}"{% endif %}
+             {% if f.max is defined %}max="{{ f.max }}"{% endif %}
+             {% if f.step is defined %}step="{{ f.step }}"{% endif %}>
+      {% elif f.type == 'multiselect' %}
+      {% set picked = f.value.split(',') | map('trim') | list %}
+      <select id="set_{{ f.env }}" data-cat-field multiple size="6">
+        {% for opt in f.options %}
+        <option value="{{ opt }}" {% if opt in picked %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+      <small class="hint">Hold Ctrl (Cmd on Mac) to pick several. None = all.</small>
+      {% else %}
+      <input type="text" id="set_{{ f.env }}" name="{{ f.env }}"
+             value="{{ f.value }}"
+             {% if f.type == 'csv' %}placeholder="comma,separated"{% endif %}>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="actions" style="width:100%;">
+      <span id="settingsMsg" class="meta"></span>
+      <button type="submit" class="primary">Save settings</button>
+    </div>
+  </form>
+</div>
+
+<!-- KPI / P&L cards -->
+<div id="kpiGrid" class="kpi-grid">
+  <div class="kpi"><div class="kpi-lbl">Wallet</div><div class="kpi-val" id="kpiWallet">—</div></div>
+  <div class="kpi"><div class="kpi-lbl">USDC balance</div><div class="kpi-val" id="kpiUsdc">—</div></div>
+  <div class="kpi"><div class="kpi-lbl">SOL balance</div><div class="kpi-val" id="kpiSol">—</div></div>
+  <div class="kpi"><div class="kpi-lbl">Available volume</div><div class="kpi-val" id="kpiVolume">—</div></div>
+  <div class="kpi"><div class="kpi-lbl">Direct budget</div><div class="kpi-val" id="kpiDirect">—</div></div>
+  <div class="kpi"><div class="kpi-lbl">Offer budget</div><div class="kpi-val" id="kpiOffer">—</div></div>
+  <div class="kpi"><div class="kpi-lbl">Per-card cap</div><div class="kpi-val" id="kpiCap">—</div></div>
+  <div class="kpi kpi-good"><div class="kpi-lbl">Resale profit (plan)</div><div class="kpi-val" id="kpiProfit">—</div></div>
+</div>
+
+<div id="statsBar" class="stats" style="display:none;">
+  <span><span id="statusPill" class="status-pill status-idle">idle</span></span>
+  <span>Cycles: <b id="statCycles">0</b></span>
+  <span>Scanned: <b id="statScanned">0</b></span>
+  <span>Candidates: <b id="statCandidates">0</b></span>
+  <span>Planned buys: <b id="statBuys">0</b></span>
+  <span>Planned offers: <b id="statOffers">0</b></span>
+  <span class="meta" id="statUpdated"></span>
+</div>
+
+<!-- Overview panel -->
+<div class="panel active" data-panel="overview">
+  <div id="overviewEmpty" class="empty">No cycle run yet. Click “Run cycle now”.</div>
+</div>
+
+<!-- Planned orders panel -->
+<div class="panel" data-panel="plan">
+  <div class="trader-section">
+    <h3>Direct buys <span id="buysCount" class="count">0</span></h3>
+    <table class="trader-table" id="buysTable">
+      <thead><tr><th>#</th><th>Card</th><th>Category</th><th class="num">Ask</th><th class="num">Insured</th><th class="num">Disc%</th><th class="num">Resell</th><th class="num">Profit</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="buysEmpty" class="empty">No direct buys planned.</div>
+  </div>
+  <div class="trader-section">
+    <h3>Offers <span id="offersCount" class="count">0</span></h3>
+    <table class="trader-table" id="offersTable">
+      <thead><tr><th>#</th><th>Card</th><th>Category</th><th class="num">Ask</th><th class="num">Bid</th><th class="num">Insured</th><th class="num">Resell</th><th class="num">Profit</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="offersEmpty" class="empty">No offers planned.</div>
+  </div>
+
+  <div class="trader-section">
+    <h3>Closest deals on the market <span id="scanCount" class="count">0</span></h3>
+    <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+      Best CC listings ranked by discount — qualifying or not — with the reason.
+      Helps you see which hypothetical cards are near your buy threshold and tune
+      the settings.
+    </div>
+    <table class="trader-table" id="scanTable">
+      <thead><tr><th>#</th><th>Card</th><th>Category</th><th class="num">Ask</th><th class="num">Insured</th><th class="num">Disc%</th><th class="num">Resell</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="scanEmpty" class="empty">No listings scanned yet.</div>
+  </div>
+</div>
+
+<!-- History panel -->
+<div class="panel" data-panel="history">
+  <div class="stats" id="totalsBar" style="display:none;">
+    <span>Total cycles: <b id="totCycles">0</b></span>
+    <span>Total planned buys: <b id="totBuys">0</b></span>
+    <span>Total planned cost: <b id="totCost">0</b></span>
+    <span>Total unrealized profit: <b id="totProfit">0</b></span>
+  </div>
+  <div class="trader-section">
+    <table class="trader-table" id="historyTable">
+      <thead><tr><th>Time</th><th>Mode</th><th class="num">Volume</th><th class="num">Scanned</th><th class="num">Buys</th><th class="num">Cost</th><th class="num">Profit</th><th class="num">Offers</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="historyEmpty" class="empty">No history yet.</div>
+  </div>
+</div>
+
+<!-- Executed orders (always visible at the bottom) -->
+<div class="trader-section" id="executedSection">
+  <h3>Bought / offers placed <span id="executedCount" class="count">0</span></h3>
+  <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+    Cards the bot purchased or placed an offer on in the last cycle. In
+    dry-run / demo these are simulated (no funds spent).
+  </div>
+  <table class="trader-table" id="executedTable">
+    <thead><tr><th>#</th><th>Action</th><th>Card</th><th>Category</th><th class="num">Price</th><th class="num">Insured</th><th class="num">Resell</th><th class="num">Profit</th><th>Status</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="executedEmpty" class="empty">Nothing bought or offered yet.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>window.__TRADER_STATE__ = {{ state | tojson }};</script>
+<script src="{{ url_for('static', filename='js/trader.js') }}"></script>
+{% endblock %}

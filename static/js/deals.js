@@ -9,9 +9,14 @@
   const knownKeys = new Set();
   let pollTimer = null;
 
+  /* Highlight thresholds (positive pct = discount vs insured value). */
+  const GOOD_DEAL_PCT = 10;
+  const MEGA_DEAL_PCT = 30;
+
   function pctClass(pct) {
-    if (pct >= 30) return 'good';
-    if (pct >= 0)  return 'mid';
+    if (pct >= MEGA_DEAL_PCT) return 'good';
+    if (pct >= GOOD_DEAL_PCT) return 'good';
+    if (pct >= 0)             return 'mid';
     return 'bad';
   }
   const dealKey = d => d.nft || d.url;
@@ -48,12 +53,26 @@
     const obsLbl = CCObserve.has(k) ? '★' : 'observe';
 
     const cls = pctClass(d.pct);
-    const psign = d.pct >= 0 ? '+' : '';
-    const deltaStr = (d.delta >= 0 ? '+' : '-') + fmtUSD(Math.abs(d.delta));
+    /* Discount is reported as positive pct by the scanner. We display it
+     * with a leading minus sign to match the user's mental model
+     * ("-25% vs insured value"). */
+    const dispPct = -Math.abs(d.pct);
+    const deltaStr = (d.delta >= 0 ? '-' : '+') + fmtUSD(Math.abs(d.delta));
     const askDisplay = fmtUSD(d.ask_usd) +
       ` <span class="currency">${escapeHtml(d.currency || '')}</span>`;
 
+    /* Highlight classes: blue edge from ≥10% discount, mega-shimmer from ≥30%. */
+    if (d.pct >= MEGA_DEAL_PCT)      card.classList.add('is-mega-deal');
+    else if (d.pct >= GOOD_DEAL_PCT) card.classList.add('is-good-deal');
+
+    /* The marketplace gold DEAL badge would also fire here (insured.js).
+     * On the deals page we use the blue/mega highlight instead — strip it. */
+    const badgeLabel = d.pct >= MEGA_DEAL_PCT ? `MEGA -${d.pct.toFixed(0)}%`
+                     : d.pct >= GOOD_DEAL_PCT ? `-${d.pct.toFixed(0)}%`
+                     : '';
+
     card.innerHTML = `
+      ${badgeLabel ? `<span class="deal-badge deal-badge-static">${badgeLabel}</span>` : ''}
       <button type="button" class="obs-btn${obsOn}" title="observe">${obsLbl}</button>
       <div class="detail">
         ${d.image ? `<img src="${escapeHtml(d.image)}" alt="" loading="lazy">` : ''}
@@ -69,19 +88,24 @@
         </div>
       </div>
       <div class="pc">
-        <div class="pc-row"><span>Insured Value</span><b>${fmtUSD(d.market_usd)}</b></div>
+        <div class="pc-row"><span>Insured value</span><b>${fmtUSD(d.market_usd)}</b></div>
         <div class="pc-row"><span>Δ USD</span>
           <b class="deal-pct ${cls}">${deltaStr}</b></div>
-        <div class="pc-row"><span>Δ %</span>
-          <b class="deal-pct ${cls}">${psign}${d.pct.toFixed(1)}%</b></div>
+        <div class="pc-row"><span>Discount</span>
+          <b class="deal-pct ${cls}">${dispPct.toFixed(1)}%</b></div>
       </div>`;
     return card;
   }
 
   function renderDeals(deals) {
     grid.innerHTML = '';
+    /* Filter out non-discount listings: ask price above the insured value
+     * is not a deal — hide it. The server still counts them in "scanned",
+     * we only suppress the visual noise. */
+    const onlyDiscounts = deals.filter(d => d.pct >= 0);
+    onlyDiscounts.sort((a, b) => b.pct - a.pct);
     const seen = new Set();
-    deals.forEach(d => {
+    onlyDiscounts.forEach(d => {
       const k = dealKey(d);
       const card = dealToCard(d);
       if (!knownKeys.has(k)) card.classList.add('new-card');
@@ -91,10 +115,10 @@
     knownKeys.clear();
     seen.forEach(k => knownKeys.add(k));
 
-    CCInsured.wire(grid.querySelectorAll('.card'));
+    /* Note: we DON'T call CCInsured.wire here. The deals page has its own
+     * (richer) footer and its own highlight classes — running the
+     * marketplace top-deal logic would only re-add the gold border. */
     CCLightbox.wire(grid.querySelectorAll('.card .detail'));
-    // Wire observe buttons on deal cards (source = the grid itself;
-    // there is no observe grid on the deals page, so we pass a noop container).
     CCObserveCards.wireGrid(document.createElement('div'), {
       sourceCards: () => grid.querySelectorAll('.card'),
     });
@@ -139,6 +163,13 @@
     document.getElementById('statRange').textContent =
       (state.min_usd != null && state.max_usd != null)
         ? `$${state.min_usd.toFixed(0)} – $${state.max_usd.toFixed(0)}` : '–';
+    const catEl = document.getElementById('statCategory');
+    if (state.category) {
+      catEl.style.display = '';
+      catEl.textContent = `Category: ${state.category}`;
+    } else {
+      catEl.style.display = 'none';
+    }
     if (state.updated_at) {
       const dt = new Date(state.updated_at * 1000);
       document.getElementById('statUpdated').textContent =
@@ -163,13 +194,16 @@
     document.getElementById('stopBtn').disabled   = !state.running || state.stop_requested;
 
     const deals = state.deals || [];
-    if (!deals.length) {
+    const discounts = deals.filter(d => d.pct >= 0);
+    if (!discounts.length) {
       grid.innerHTML = '';
       emptyEl.style.display = '';
       emptyEl.innerHTML = state.running
-        ? '<span class="spinner"></span> No hits yet – scan running …'
+        ? '<span class="spinner"></span> No discounts yet – scan running …'
         : (state.done
-            ? 'No cards in this price range with an insured value found.'
+            ? (deals.length
+                ? `Scanned ${deals.length} listings – none priced below their insured value.`
+                : 'No cards in this price range with an insured value found.')
             : 'Enter a price range and start the scan.');
       knownKeys.clear();
       return;

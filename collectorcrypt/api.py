@@ -31,8 +31,8 @@ class CCClient:
     # Marketplace
     # ------------------------------------------------------------------ #
     def fetch_marketplace_page(self, page: int, step: int = config.DEFAULT_STEP,
-                               search: str = "") -> dict[str, Any]:
-        key = ("marketplace", page, step, search)
+                               search: str = "", category: str = "") -> dict[str, Any]:
+        key = ("marketplace", page, step, search, category)
         cached = self._cache_get(key)
         if cached is not None:
             return cached
@@ -45,13 +45,14 @@ class CCClient:
 
     def fetch_marketplace_page_with_retry(
         self, page: int, step: int, *, should_abort: Callable[[], bool] | None = None,
+        category: str = "",
     ) -> dict[str, Any]:
         """Like :meth:`fetch_marketplace_page`, but with backoff on 403/429/5xx."""
         should_abort = should_abort or (lambda: False)
         last_exc: Exception | None = None
         for delay in (*config.RETRY_DELAYS, None):
             try:
-                return self.fetch_marketplace_page(page, step, "")
+                return self.fetch_marketplace_page(page, step, "", category)
             except requests.HTTPError as exc:
                 code = exc.response.status_code if exc.response is not None else 0
                 last_exc = exc
@@ -65,6 +66,31 @@ class CCClient:
                 # Abort requested – propagate cleanly.
                 raise last_exc  # type: ignore[misc]
         raise last_exc  # type: ignore[misc]
+
+    # ------------------------------------------------------------------ #
+    # Wallet / Profile
+    # ------------------------------------------------------------------ #
+    def fetch_wallet_cards(self, wallet: str, page: int = 1,
+                           step: int = config.DEFAULT_STEP) -> dict[str, Any]:
+        """Cards owned by a Solana wallet. Returns the raw API response or
+        an empty stub when the wallet is unknown (404)."""
+        key = ("wallet", wallet, page, step)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        url = f"{config.API_BASE}/cards/{wallet}"
+        params = {"page": page, "step": step}
+        r = self._session.get(url, params=params, timeout=config.REQUEST_TIMEOUT)
+        if r.status_code == 404:
+            data = {"totalCards": 0, "total": 0, "findTotal": 0, "totalPages": 0,
+                    "insuredValueSum": "0", "cardsQtyByCategory": {},
+                    "filterNFtCard": [], "_notFound": True}
+            self._cache_set(key, data)
+            return data
+        r.raise_for_status()
+        data = r.json()
+        self._cache_set(key, data)
+        return data
 
     # ------------------------------------------------------------------ #
     # Single card

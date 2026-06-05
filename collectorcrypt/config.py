@@ -20,6 +20,19 @@ MIN_STEP = 6
 
 # Scanner (deals)
 SCAN_STEP = 100
+PAGE_DELAY_SECONDS = 5  # wait between page fetches to avoid middleware blocking
+
+# Known marketplace categories (empty string = all)
+SCAN_CATEGORIES = [
+    "",
+    "Pokemon",
+    "One Piece",
+    "Dragon Ball",
+    "Magic: The Gathering",
+    "Lorcana",
+    "Yu-Gi-Oh!",
+    "Sports",
+]
 
 # HTTP
 REQUEST_TIMEOUT = 30

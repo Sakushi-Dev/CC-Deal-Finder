@@ -2,14 +2,19 @@
 {% block title %}CollectorCrypt – Deals{% endblock %}
 
 {% block body %}
-<header>
-  <h1>
-    <a class="nav" href="/">← Marketplace</a>
-    Deals scanner
-  </h1>
-  <div class="meta">
-    Live comparison of CollectorCrypt sale price (USDC/SOL→USD) vs.
-    CC insured value. Display refreshes every 5 seconds.
+<div class="topbar">
+  <div class="row">
+    <div>
+      <div class="crumb">Tools</div>
+      <h1>Deals scanner</h1>
+    </div>
+    <div class="meta" style="margin-left:auto;">
+      Live compare · refresh 5s · <span id="solRate" data-sol-rate></span>
+    </div>
+  </div>
+
+  <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+    Live comparison of CollectorCrypt sale price (USDC/SOL → USD) vs. CC insured value.
   </div>
 
   <form id="scanForm" class="controls">
@@ -17,26 +22,33 @@
       value="{{ '%.0f' % state.min_usd if state.min_usd is not none else '' }}" required></label>
     <label>Max USD <input type="number" name="max" step="1" min="0" id="maxInput"
       value="{{ '%.0f' % state.max_usd if state.max_usd is not none else '' }}" required></label>
-    <label>Order
-      <select name="order" id="orderInput">
-        <option value="shuffle"{% if state.order != 'newest' %} selected{% endif %}>Shuffle</option>
-        <option value="newest"{% if state.order == 'newest' %} selected{% endif %}>Newest first</option>
+    <label>Category
+      <select name="category" id="categoryInput">
+        {% for cat in categories %}
+        <option value="{{ cat }}"{% if state.category == cat %} selected{% endif %}>{{ cat if cat else 'All categories' }}</option>
+        {% endfor %}
       </select>
     </label>
-    <button type="submit" id="scanBtn">Start scan</button>
+    <label>Order
+      <select name="order" id="orderInput">
+        <option value="newest"{% if state.order != 'shuffle' %} selected{% endif %}>Newest first</option>
+        <option value="shuffle"{% if state.order == 'shuffle' %} selected{% endif %}>Shuffle</option>
+      </select>
+    </label>
+    <button type="submit" id="scanBtn" class="primary">Start scan</button>
     <button type="button" id="pauseBtn"  disabled>Pause</button>
     <button type="button" id="resumeBtn" disabled>Resume</button>
     <button type="button" id="stopBtn"   disabled>Stop</button>
-    <span id="solRate" class="meta"></span>
   </form>
 
   <div class="tabs">
+    <button type="button" class="tab active">Results</button>
     <div class="view-toggle" role="group" aria-label="View">
       <button type="button" data-view-cards class="active" title="Card view">▣ Cards</button>
       <button type="button" data-view-list                  title="List view">☰ List</button>
     </div>
   </div>
-</header>
+</div>
 
 <div id="errorBox" class="error" style="display:none;"></div>
 
@@ -47,8 +59,9 @@
   <span>In range: <b id="statInRange">0</b></span>
   <span>Hits: <b id="statMatched">0</b></span>
   <span>Range: <b id="statRange">–</b></span>
+  <span id="statCategory" class="meta" style="display:none;"></span>
   <span class="meta" id="statUpdated"></span>
-  <span class="meta" id="statPageErr" style="display:none;color:#f4a07d;"></span>
+  <span class="meta" id="statPageErr" style="display:none;color:var(--bad);"></span>
 </div>
 
 <div class="panel active">

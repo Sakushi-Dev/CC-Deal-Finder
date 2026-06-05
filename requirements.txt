@@ -1,2 +1,5 @@
 flask>=3.0
 requests>=2.31
+# Autonomous trader (Solana keypair signing + .env loading)
+solders>=0.21
+python-dotenv>=1.0

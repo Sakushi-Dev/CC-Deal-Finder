@@ -23,11 +23,16 @@
   CCInsured.wire(document.querySelectorAll('#grid-marketplace .card'));
   CCLightbox.wire(document.querySelectorAll('.card .detail'));
 
-  // Observe
+  // Observe – update both sidebar badge (#obs-count) and tab counter (#obs-count-tab)
   const observeGrid = document.getElementById('grid-observe');
+  const _countEls = [
+    document.getElementById('obs-count'),
+    document.getElementById('obs-count-tab'),
+  ].filter(Boolean);
+  const countProxy = { set textContent(v) { _countEls.forEach(e => e.textContent = v); } };
   const ctrl = CCObserveCards.wireGrid(observeGrid, {
     emptyEl: document.getElementById('observe-empty'),
-    countEl: document.getElementById('obs-count'),
+    countEl: countProxy,
     sourceCards: () => document.querySelectorAll('#grid-marketplace .card'),
     refreshFromApi: true,
   });
@@ -41,5 +46,19 @@
       document.getElementById('panel-observe').classList.toggle('active', which === 'observe');
       if (which === 'observe') ctrl.rebuild();
     });
+  });
+
+  // Open the observe tab automatically when the URL hash is #observe
+  // (used by the sidebar "Observed" link from other pages).
+  function activatePanel(which) {
+    document.querySelectorAll('.tab').forEach(x =>
+      x.classList.toggle('active', x.dataset.panel === which));
+    document.getElementById('panel-marketplace').classList.toggle('active', which === 'marketplace');
+    document.getElementById('panel-observe').classList.toggle('active', which === 'observe');
+    if (which === 'observe') ctrl.rebuild();
+  }
+  if (location.hash === '#observe') activatePanel('observe');
+  window.addEventListener('hashchange', () => {
+    activatePanel(location.hash === '#observe' ? 'observe' : 'marketplace');
   });
 })();

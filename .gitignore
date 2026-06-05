@@ -27,6 +27,15 @@ ENV/
 *.pem
 secrets.json
 
+# Trader wallet / keystore (NEVER commit a private key)
+wallet.json
+keypair.json
+*.keypair
+*.wallet
+trader.env
+trade_history.jsonl
+trader_settings.json
+
 # IDE / Editor
 .vscode/
 .idea/

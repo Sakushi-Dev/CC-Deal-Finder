@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}CollectorCrypt – Profile{% endblock %}
+
+{% block body %}
+<div class="topbar">
+  <div class="row">
+    <div>
+      <div class="crumb">Wallet</div>
+      <h1>Profile</h1>
+    </div>
+    {% if wallet and not error and not not_found %}
+      <div class="meta" style="margin-left:auto;">
+        <b>{{ total_cards }}</b> cards · insured <b>${{ '{:,.0f}'.format(insured_sum) }}</b>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+    Enter your Solana wallet address to see the cards you own and a quick value dashboard.
+  </div>
+
+  <form class="controls" method="get" action="/profile">
+    <input type="text" name="wallet" id="walletInput" value="{{ wallet }}"
+      placeholder="Solana wallet (Base58, e.g. CxjcNHz...PiN8t)"
+      autocomplete="off" spellcheck="false" style="min-width:420px;flex:1;">
+    <input type="number" name="step" min="6" max="100" value="{{ step }}" title="Cards per page">
+    <input type="hidden" name="page" value="1">
+    <button type="submit" class="primary">Load</button>
+    <button type="button" id="clearWalletBtn">Clear saved</button>
+  </form>
+
+  <div class="tabs">
+    <button type="button" class="tab active">Holdings</button>
+    <div class="view-toggle" role="group" aria-label="View">
+      <button type="button" data-view-cards class="active" title="Card view">▣ Cards</button>
+      <button type="button" data-view-list                  title="List view">☰ List</button>
+    </div>
+  </div>
+</div>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+{% if wallet and not error %}
+  {% if not_found %}
+    <div class="empty">No profile found for this wallet on CollectorCrypt.</div>
+  {% else %}
+    <div class="stats">
+      <span>Cards owned: <b>{{ total_cards }}</b></span>
+      <span>Total insured value: <b>${{ '{:,.2f}'.format(insured_sum) }}</b></span>
+      {% if total_cards %}
+        <span>Avg insured value: <b>${{ '{:,.2f}'.format(insured_sum / total_cards) }}</b></span>
+      {% endif %}
+      {% if total_pages %}
+        <span>Page <b>{{ page }}</b>/<b>{{ total_pages }}</b></span>
+      {% endif %}
+      {% if qty_by_category %}
+        <span class="meta">
+          {% for cat, n in qty_by_category.items() %}
+            {{ cat }}: <b>{{ n }}</b>{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </span>
+      {% endif %}
+    </div>
+
+    {% if not cards %}
+      <div class="empty">No cards on this page.</div>
+    {% endif %}
+
+    <div class="panel active">
+      <div class="grid" id="grid-profile">
+        {% for c in cards %}{% include "_card.html" %}{% endfor %}
+      </div>
+    </div>
+
+    {% if total_pages > 1 %}
+      <div class="pager">
+        <a class="btn" href="?wallet={{ wallet }}&step={{ step }}&page={{ page-1 }}"
+           aria-disabled="{{ 'true' if page <= 1 else 'false' }}">← Back</a>
+        <span>Page {{ page }} / {{ total_pages }}</span>
+        <a class="btn" href="?wallet={{ wallet }}&step={{ step }}&page={{ page+1 }}"
+           aria-disabled="{{ 'true' if page >= total_pages else 'false' }}">Next →</a>
+      </div>
+    {% endif %}
+  {% endif %}
+{% elif not wallet %}
+  <div class="empty">Enter a wallet address above to load your owned cards.</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/profile.js') }}"></script>
+{% endblock %}

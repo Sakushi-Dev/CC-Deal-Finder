@@ -34,6 +34,7 @@
     el.className = 'card';
     Object.entries(snap).forEach(([k, v]) => { el.dataset[k] = v || ''; });
     el.innerHTML = `
+      <span class="deal-badge" data-deal-badge>DEAL</span>
       <button type="button" class="obs-btn on" title="remove observe">observe</button>
       <div class="detail">
         ${snap.image ? `<img src="${snap.image}" alt="" loading="lazy">` : ''}
