@@ -106,7 +106,7 @@ def test_sync_confirms_pending_buy(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "confirmed"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.confirmed == 1
     assert store.get_by_client_order_id(o.client_order_id).status is OrderStatus.CONFIRMED
 
@@ -116,7 +116,7 @@ def test_sync_confirms_accepted_offer(store):
     _seed_active(store, o, OrderStatus.OPEN)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "accepted"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.confirmed == 1
 
 
@@ -125,7 +125,7 @@ def test_sync_cancels_withdrawn(store):
     _seed_active(store, o, OrderStatus.OPEN)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "cancelled"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.cancelled == 1
     assert store.get_by_client_order_id(o.client_order_id).status is OrderStatus.CANCELLED
 
@@ -135,7 +135,7 @@ def test_sync_ambiguous_left_unresolved(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "pending"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.unresolved == 1
     assert store.get_by_client_order_id(o.client_order_id).status is OrderStatus.PENDING
 
@@ -145,17 +145,17 @@ def test_sync_read_error_never_transitions(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.errors["check_listing_status"] = CCServerError("down")
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.errors == 1
     assert store.get_by_client_order_id(o.client_order_id).status is OrderStatus.PENDING
 
 
-def test_sync_no_external_id_unresolved(store):
+def test_sync_no_wallet_unresolved(store):
+    # Without a wallet there is nothing to look up -> failure-safe unresolved.
     o = make_buy(nft="A", cycle_id="c", simulated=False)
-    o.transition(OrderStatus.PENDING)  # no external_id
-    store.upsert_order(o)
+    _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="").sync()
     assert report.unresolved == 1
 
 
@@ -165,7 +165,7 @@ def test_sync_confirmed_buy_spawns_relist(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "confirmed"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.relisted_spawned == 1
     assert len(store.relist_candidates()) == 1
 
@@ -176,12 +176,12 @@ def test_sync_confirmed_buy_no_resell_no_relist(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "confirmed"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.relisted_spawned == 0
 
 
 def test_sync_empty_when_nothing_active(store):
-    report = StatusSyncer(store, client=FakeClient()).sync()
+    report = StatusSyncer(store, client=FakeClient(), wallet="W").sync()
     assert report.checked == 0
 
 
@@ -191,7 +191,7 @@ def test_sync_checks_every_active(store):
         _seed_active(store, o, OrderStatus.PENDING, external_id=f"ext{i}")
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "pending"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.checked == 3
 
 
@@ -200,13 +200,13 @@ def test_sync_records_transitions(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "confirmed"}
-    report = StatusSyncer(store, client=client).sync()
+    report = StatusSyncer(store, client=client, wallet="W").sync()
     assert report.transitions[0]["to"] == "confirmed"
     assert report.transitions[0]["from"] == "pending"
 
 
 def test_sync_to_dict_shape(store):
-    d = StatusSyncer(store, client=FakeClient()).sync().to_dict()
+    d = StatusSyncer(store, client=FakeClient(), wallet="W").sync().to_dict()
     for key in ("ts", "checked", "confirmed", "cancelled", "relisted_spawned",
                 "unresolved", "errors", "transitions"):
         assert key in d
@@ -219,6 +219,6 @@ def test_sync_relist_idempotent(store):
     _seed_active(store, o, OrderStatus.PENDING)
     client = FakeClient()
     client.responses["check_listing_status"] = {"status": "confirmed"}
-    StatusSyncer(store, client=client).sync()
+    StatusSyncer(store, client=client, wallet="W").sync()
     # Manually re-open is impossible (terminal), but the relist candidate exists.
     assert len(store.relist_candidates()) == 1

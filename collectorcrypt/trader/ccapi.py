@@ -41,12 +41,14 @@ from .auth import NullSessionProvider, SessionProvider
 
 logger = logging.getLogger("collectorcrypt.trader.ccapi")
 
-# Endpoint paths (relative to ``config.API_BASE``). Sourced from docs/api.md;
-# methods/payloads marked "assumed" are reverse-engineered and unverified.
-EP_USERS_ME = "api/v1/users/me"
-EP_ACCOUNT_LISTINGS = "account/{account_id}/listings"
-EP_ACCOUNT_OFFERS_MADE = "account/{account_id}/offers-made"
-EP_BUY = "marketplace/buy"                 # initiate purchase -> returns tx
+# Endpoint paths (relative to ``config.API_BASE``). Shapes marked VERIFIED were
+# confirmed live (probe 2026-06-06, see docs/api.md); the rest remain assumed.
+#
+# Transport styles (from the frontend bundle's axios wrappers):
+#   * REST POST  -> POST <path> with an object body   (marketplace/*)
+#   * RPC /v2    -> POST /v2 with {method, params}     (checkListingStatus, ...)
+EP_RPC_V2 = "v2"                           # RPC dispatch endpoint
+EP_BUY = "marketplace/buy"                 # VERIFIED 201 -> bare base64 tx
 EP_MAKE_OFFER = "marketplace/make-offer"   # submit an offer -> returns tx
 EP_CANCEL_OFFER = "marketplace/cancel-offer"
 EP_LIST = "marketplace/list"               # list a card -> returns tx
@@ -54,7 +56,7 @@ EP_UPDATE_LISTING = "marketplace/update-listing"
 EP_CANCEL_LISTING = "marketplace/cancel-listing"
 EP_BROADCAST = "marketplace/broadcast"     # broadcast a signed tx
 EP_CALC_LISTING_FEE = "calcListingFee"
-EP_CHECK_LISTING_STATUS = "checkListingStatus"
+RPC_CHECK_LISTING_STATUS = "checkListingStatus"   # VERIFIED 200 (RPC method)
 
 
 # --------------------------------------------------------------------------- #
@@ -156,31 +158,19 @@ class CCTradingClient:
     # ------------------------------------------------------------------ #
     # Authenticated reads (safe, idempotent -> retryable)
     # ------------------------------------------------------------------ #
-    def me(self) -> dict[str, Any]:
-        """Profile of the authenticated user. Confirms the session works."""
-        return self._request("GET", EP_USERS_ME, auth=True, idempotent=True)
+    def check_listing_status(self, *, nft: str, wallet: str) -> dict[str, Any]:
+        """Live listing status for a card. VERIFIED (probe 2026-06-06).
 
-    def account_listings(self, account_id: str) -> dict[str, Any]:
-        return self._request(
-            "GET", EP_ACCOUNT_LISTINGS.format(account_id=account_id),
-            auth=True, idempotent=True,
-        )
-
-    def account_offers_made(self, account_id: str) -> dict[str, Any]:
-        return self._request(
-            "GET", EP_ACCOUNT_OFFERS_MADE.format(account_id=account_id),
-            auth=True, idempotent=True,
-        )
-
-    def check_listing_status(self, listing_id: str) -> dict[str, Any]:
-        return self._request(
-            "GET", EP_CHECK_LISTING_STATUS, auth=True, idempotent=True,
-            params={"id": listing_id},
-        )
+        RPC call: ``POST /v2`` with ``{method, params:{nftAddress, wallet}}``.
+        ``params`` is strict — exactly ``nftAddress`` + ``wallet``. Returns
+        ``{exists, marketplace, listing}``.
+        """
+        return self._rpc(RPC_CHECK_LISTING_STATUS,
+                         {"nftAddress": nft, "wallet": wallet})
 
     def calc_listing_fee(self, *, nft: str, price: float,
                          currency: str = "USDC") -> dict[str, Any]:
-        # GET with query params is safe to retry.
+        # GET with query params is safe to retry. (Unverified shape.)
         return self._request(
             "GET", EP_CALC_LISTING_FEE, auth=True, idempotent=True,
             params={"nftAddress": nft, "price": price, "currency": currency},
@@ -189,24 +179,29 @@ class CCTradingClient:
     # ------------------------------------------------------------------ #
     # Trading writes (state-changing -> NEVER auto-retried)
     # ------------------------------------------------------------------ #
-    # NOTE: Request bodies below are reverse-engineered assumptions from the
-    # frontend bundle (see docs/api.md). They are sent verbatim and the raw
-    # response is returned for the executor (ETAPPE 5) to interpret. Until the
-    # flow is verified on a funded test wallet these must not drive live spend.
+    # The buy/broadcast bodies below are VERIFIED (probe 2026-06-06). The offer/
+    # list/cancel bodies remain reverse-engineered assumptions (paths confirmed
+    # from the bundle map, bodies not yet probed) and must not drive live spend
+    # until verified on a funded test wallet.
 
-    def initiate_buy(self, *, nft: str, price: float, currency: str = "USDC",
-                     receipt_id: str = "", extra: dict[str, Any] | None = None
-                     ) -> dict[str, Any]:
-        """Initiate a direct purchase. Expected to return an unsigned tx payload.
+    def initiate_buy(self, *, nft: str, price: float, wallet: str,
+                     currency: str = "USDC", funding_source: str = "wallet",
+                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Initiate a direct purchase. VERIFIED HTTP 201 (probe 2026-06-06).
 
-        ASSUMPTION: ``marketplace/buy`` accepts the listing's nft address, the
-        agreed price/currency and the listing ``receiptId``, and responds with a
-        serialized Solana transaction for the buyer to sign and then broadcast
-        via :meth:`broadcast`.
+        ``POST marketplace/buy`` with
+        ``{currency, nftAddress, price, wallet, fundingSource}``. The response
+        body is a **bare base64 ``VersionedTransaction`` string** (no JSON
+        envelope) for the buyer to sign locally and broadcast via
+        :meth:`broadcast`. ``funding_source`` is ``"wallet"`` or ``"escrow"``.
         """
-        body = {"nftAddress": nft, "price": price, "currency": currency}
-        if receipt_id:
-            body["receiptId"] = receipt_id
+        body: dict[str, Any] = {
+            "currency": currency,
+            "nftAddress": nft,
+            "price": price,
+            "wallet": wallet,
+            "fundingSource": funding_source,
+        }
         if extra:
             body.update(extra)
         return self._request("POST", EP_BUY, auth=True, json=body)
@@ -244,18 +239,35 @@ class CCTradingClient:
         return self._request("POST", EP_CANCEL_OFFER, auth=True,
                              json={"id": offer_id})
 
-    def broadcast(self, *, signed_tx: str,
+    def broadcast(self, *, signed_tx: str, wallet: str = "", nft: str = "",
                   extra: dict[str, Any] | None = None) -> dict[str, Any]:
         """Broadcast a locally-signed transaction.
 
-        ASSUMPTION: ``marketplace/broadcast`` accepts the base64/base58 signed
-        transaction and returns the on-chain signature plus a receipt. This is
-        the only step that finalises a trade on-chain, so it is never retried.
+        VERIFIED body (from the bundle): ``{signedTransaction, wallet,
+        nftAddress?}``. This is the only step that finalises a trade on-chain,
+        so it is never retried automatically.
         """
-        body = {"signedTransaction": signed_tx}
+        body: dict[str, Any] = {"signedTransaction": signed_tx}
+        if wallet:
+            body["wallet"] = wallet
+        if nft:
+            body["nftAddress"] = nft
         if extra:
             body.update(extra)
         return self._request("POST", EP_BROADCAST, auth=True, json=body)
+
+    # ------------------------------------------------------------------ #
+    # RPC transport (POST /v2 with {method, params})
+    # ------------------------------------------------------------------ #
+    def _rpc(self, method: str, params: dict[str, Any], *,
+             idempotent: bool = True) -> dict[str, Any]:
+        """Dispatch an RPC-style call (``POST /v2`` with ``{method, params}``).
+
+        Read RPCs (e.g. ``checkListingStatus``) are idempotent and retryable.
+        """
+        return self._request("POST", EP_RPC_V2, auth=True,
+                             idempotent=idempotent,
+                             json={"method": method, "params": params})
 
     # ------------------------------------------------------------------ #
     # Core transport
@@ -329,7 +341,16 @@ class CCTradingClient:
 
         if 200 <= status < 300:
             logger.debug("CC %s %s -> %d OK", method, path, status)
-            return body if isinstance(body, dict) else {"data": body}
+            if isinstance(body, dict):
+                return body
+            # Some endpoints (e.g. marketplace/buy) return a bare value rather
+            # than a JSON object: the response body *is* the base64 unsigned
+            # transaction string. Fall back to the raw text so the caller can
+            # read it from the ``data`` envelope.
+            if body is None:
+                text = resp.text.strip()
+                return {"data": text} if text else {"data": None}
+            return {"data": body}
 
         msg = _error_message(body) or resp.text[:200]
         logger.warning("CC %s %s -> %d %s", method, path, status,

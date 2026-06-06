@@ -241,6 +241,7 @@ class TradeEngine:
             syncer = StatusSyncer(
                 self._store,  # type: ignore[arg-type]
                 client=CCTradingClient(session_provider=self._session_provider),
+                wallet=self._wallet.address,
             )
             return syncer.sync().to_dict()
         except CCApiError as exc:

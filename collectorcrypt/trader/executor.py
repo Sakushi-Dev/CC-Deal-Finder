@@ -150,8 +150,8 @@ class LiveExecutor:
         self._persist(order)
         resp = self._client.initiate_buy(
             nft=order.nft, price=order.price_usd,
+            wallet=self._wallet.address,
             currency=order.currency or "USDC",
-            receipt_id=order.external_id,
         )
         tx = _extract_tx(resp)
         external_id = _extract_external_id(resp)
@@ -263,7 +263,8 @@ class LiveExecutor:
         self._persist(order)
 
         try:
-            resp = self._client.broadcast(signed_tx=signed)
+            resp = self._client.broadcast(
+                signed_tx=signed, wallet=self._wallet.address, nft=order.nft)
         except CCApiError as exc:
             # Writes are never auto-retried; surface for the reconciler.
             self._fail(order, f"broadcast failed: {exc}")
@@ -413,7 +414,14 @@ def _first(data: Any, *keys: str) -> Any:
 def _extract_tx(resp: Any) -> str:
     val = _first(resp, "transaction", "tx", "unsignedTransaction",
                  "serializedTransaction", "txData", "encodedTransaction")
-    return str(val) if val else ""
+    if val:
+        return str(val)
+    # VERIFIED: marketplace/buy returns a bare base64 transaction string, which
+    # the transport wraps as ``{"data": "<base64>"}``. Accept that shape too.
+    data = resp.get("data") if isinstance(resp, dict) else None
+    if isinstance(data, str) and data:
+        return data
+    return ""
 
 
 def _extract_external_id(resp: Any) -> str:

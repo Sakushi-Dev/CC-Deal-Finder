@@ -127,15 +127,19 @@ def test_redact_does_not_mutate_input():
 # --------------------------------------------------------------------------- #
 # Successful reads
 # --------------------------------------------------------------------------- #
-def test_me_returns_payload():
-    client, _ = make_client([FakeResponse(200, {"id": "acct"})])
-    assert client.me() == {"id": "acct"}
+def test_check_listing_status_returns_payload():
+    client, _ = make_client([FakeResponse(200, {"exists": True})])
+    assert client.check_listing_status(nft="N", wallet="W") == {"exists": True}
 
 
-def test_check_listing_status_passes_id_param():
-    client, http = make_client([FakeResponse(200, {"status": "pending"})])
-    client.check_listing_status("LST1")
-    assert http.calls[0]["params"] == {"id": "LST1"}
+def test_check_listing_status_uses_rpc_v2():
+    client, http = make_client([FakeResponse(200, {"exists": False})])
+    client.check_listing_status(nft="N1", wallet="W1")
+    assert http.calls[0]["method"] == "POST"
+    assert http.calls[0]["url"].endswith("/v2")
+    assert http.calls[0]["json"] == {
+        "method": "checkListingStatus",
+        "params": {"nftAddress": "N1", "wallet": "W1"}}
 
 
 def test_calc_listing_fee_params():
@@ -147,13 +151,20 @@ def test_calc_listing_fee_params():
 
 def test_non_dict_body_wrapped_in_data():
     client, _ = make_client([FakeResponse(200, [1, 2, 3])])
-    assert client.me() == {"data": [1, 2, 3]}
+    assert client.check_listing_status(nft="N", wallet="W") == {"data": [1, 2, 3]}
+
+
+def test_bare_text_body_wrapped_in_data():
+    # marketplace/buy returns a bare base64 tx string (not JSON).
+    client, _ = make_client([FakeResponse(200, None, text="BASE64TX==")])
+    assert client.initiate_buy(nft="N", price=1.0, wallet="W") == {
+        "data": "BASE64TX=="}
 
 
 def test_auth_header_attached():
     client, http = make_client([FakeResponse(200, {"ok": True})],
                                provider=FakeSessionProvider(token="tok42"))
-    client.me()
+    client.check_listing_status(nft="N", wallet="W")
     assert http.calls[0]["headers"]["Authorization"] == "Bearer tok42"
 
 
@@ -162,16 +173,17 @@ def test_auth_header_attached():
 # --------------------------------------------------------------------------- #
 def test_initiate_buy_body():
     client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.initiate_buy(nft="NFT", price=12.5, receipt_id="rcpt")
+    client.initiate_buy(nft="NFT", price=12.5, wallet="WALLET")
     body = http.calls[0]["json"]
-    assert body == {"nftAddress": "NFT", "price": 12.5, "currency": "USDC",
-                    "receiptId": "rcpt"}
+    assert body == {"currency": "USDC", "nftAddress": "NFT", "price": 12.5,
+                    "wallet": "WALLET", "fundingSource": "wallet"}
 
 
-def test_initiate_buy_omits_empty_receipt():
+def test_initiate_buy_funding_source_escrow():
     client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.initiate_buy(nft="NFT", price=12.5)
-    assert "receiptId" not in http.calls[0]["json"]
+    client.initiate_buy(nft="NFT", price=12.5, wallet="W",
+                        funding_source="escrow")
+    assert http.calls[0]["json"]["fundingSource"] == "escrow"
 
 
 def test_make_offer_body():
@@ -194,6 +206,13 @@ def test_broadcast_body():
     assert http.calls[0]["json"] == {"signedTransaction": "SIGNEDTX"}
 
 
+def test_broadcast_body_with_wallet_and_nft():
+    client, http = make_client([FakeResponse(200, {"signature": "s"})])
+    client.broadcast(signed_tx="SIGNEDTX", wallet="W", nft="N")
+    assert http.calls[0]["json"] == {"signedTransaction": "SIGNEDTX",
+                                     "wallet": "W", "nftAddress": "N"}
+
+
 def test_cancel_listing_body():
     client, http = make_client([FakeResponse(200, {"ok": True})])
     client.cancel_listing(listing_id="L1")
@@ -208,7 +227,7 @@ def test_cancel_offer_body():
 
 def test_write_extra_merged():
     client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.initiate_buy(nft="N", price=1.0, extra={"slippage": 5})
+    client.initiate_buy(nft="N", price=1.0, wallet="W", extra={"slippage": 5})
     assert http.calls[0]["json"]["slippage"] == 5
 
 
@@ -222,39 +241,39 @@ def test_write_extra_merged():
 def test_4xx_maps_to_client_error(status, exc):
     client, _ = make_client([FakeResponse(status, {"message": "bad"})])
     with pytest.raises(exc):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
 
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_auth_status_maps_to_auth_error(status):
     client, _ = make_client([FakeResponse(status, {"message": "no"})])
     with pytest.raises(CCAuthError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
 
 
 @pytest.mark.parametrize("status", [500, 502, 503])
 def test_5xx_maps_to_server_error_after_retries(status):
     client, _ = make_client([FakeResponse(status, {"message": "boom"})] * 4)
     with pytest.raises(CCServerError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
 
 
 def test_429_maps_to_rate_limit_after_retries():
     client, _ = make_client([FakeResponse(429, {"message": "slow"})] * 4)
     with pytest.raises(CCRateLimitError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
 
 
 def test_network_error_maps():
     client, _ = make_client([requests.ConnectionError("down")] * 4)
     with pytest.raises(CCNetworkError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
 
 
 def test_error_message_extracted():
     client, _ = make_client([FakeResponse(400, {"error": "specific reason"})])
     with pytest.raises(CCClientError) as ei:
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
     assert "specific reason" in str(ei.value)
 
 
@@ -264,27 +283,27 @@ def test_error_message_extracted():
 def test_read_retries_on_5xx_then_succeeds():
     client, http = make_client([
         FakeResponse(500, {"message": "x"}),
-        FakeResponse(200, {"id": "acct"}),
+        FakeResponse(200, {"exists": True}),
     ])
-    assert client.me() == {"id": "acct"}
+    assert client.check_listing_status(nft="N", wallet="W") == {"exists": True}
     assert len(http.calls) == 2
 
 
 def test_read_retries_on_429_then_succeeds():
     client, http = make_client([
         FakeResponse(429, {"message": "x"}, headers={"Retry-After": "0"}),
-        FakeResponse(200, {"id": "acct"}),
+        FakeResponse(200, {"exists": True}),
     ])
-    client.me()
+    client.check_listing_status(nft="N", wallet="W")
     assert len(http.calls) == 2
 
 
 def test_read_retries_on_network_then_succeeds():
     client, http = make_client([
         requests.ConnectionError("down"),
-        FakeResponse(200, {"id": "acct"}),
+        FakeResponse(200, {"exists": True}),
     ])
-    client.me()
+    client.check_listing_status(nft="N", wallet="W")
     assert len(http.calls) == 2
 
 
@@ -292,12 +311,12 @@ def test_read_exhausts_max_retries():
     client, http = make_client([FakeResponse(500, {"message": "x"})] * 4,
                                max_retries=3)
     with pytest.raises(CCServerError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
     assert len(http.calls) == 4  # 1 + 3 retries
 
 
 @pytest.mark.parametrize("call", [
-    lambda c: c.initiate_buy(nft="N", price=1.0),
+    lambda c: c.initiate_buy(nft="N", price=1.0, wallet="W"),
     lambda c: c.make_offer(nft="N", price=1.0),
     lambda c: c.create_listing(nft="N", price=1.0),
     lambda c: c.broadcast(signed_tx="S"),
@@ -310,7 +329,7 @@ def test_write_never_retries_on_5xx(call):
 
 
 @pytest.mark.parametrize("call", [
-    lambda c: c.initiate_buy(nft="N", price=1.0),
+    lambda c: c.initiate_buy(nft="N", price=1.0, wallet="W"),
     lambda c: c.make_offer(nft="N", price=1.0),
     lambda c: c.broadcast(signed_tx="S"),
 ])
@@ -322,7 +341,7 @@ def test_write_never_retries_on_429(call):
 
 
 @pytest.mark.parametrize("call", [
-    lambda c: c.initiate_buy(nft="N", price=1.0),
+    lambda c: c.initiate_buy(nft="N", price=1.0, wallet="W"),
     lambda c: c.broadcast(signed_tx="S"),
 ])
 def test_write_never_retries_on_network(call):
@@ -340,7 +359,7 @@ def test_401_invalidates_session_and_does_not_retry():
     client, http = make_client([FakeResponse(401, {"message": "stale"})] * 4,
                                provider=provider)
     with pytest.raises(CCAuthError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
     assert provider.invalidated == 1
     assert len(http.calls) == 1  # auth failure never retried
 
@@ -349,7 +368,7 @@ def test_null_provider_refuses_before_any_http():
     http = FakeHTTP([FakeResponse(200, {"ok": True})])
     client = CCTradingClient(session_provider=NullSessionProvider(), http=http)
     with pytest.raises(CCAuthError):
-        client.me()
+        client.check_listing_status(nft="N", wallet="W")
     assert len(http.calls) == 0  # never reached the network
 
 
@@ -358,7 +377,7 @@ def test_provider_error_propagates_on_write():
     http = FakeHTTP([FakeResponse(200, {"transaction": "tx"})])
     client = CCTradingClient(session_provider=provider, http=http)
     with pytest.raises(CCAuthError):
-        client.initiate_buy(nft="N", price=1.0)
+        client.initiate_buy(nft="N", price=1.0, wallet="W")
     assert len(http.calls) == 0
 
 
@@ -372,5 +391,5 @@ def test_retry_after_header_used(monkeypatch):
         FakeResponse(429, {"message": "x"}, headers={"Retry-After": "2"}),
         FakeResponse(200, {"ok": True}),
     ])
-    client.me()
+    client.check_listing_status(nft="N", wallet="W")
     assert 2.0 in slept

@@ -174,10 +174,10 @@ class StatusSyncer:
     """
 
     def __init__(self, store: OrderStore, *, client: Any,
-                 account_id: str = "") -> None:
+                 wallet: str = "") -> None:
         self._store = store
         self._client = client
-        self._account_id = account_id
+        self._wallet = wallet
 
     def sync(self) -> StatusSyncReport:
         report = StatusSyncReport()
@@ -185,13 +185,10 @@ class StatusSyncer:
         if not active:
             return report
 
-        # Resolve the account id once (needed by some reads); tolerate failure.
-        account_id = self._account_id or self._resolve_account_id()
-
         for order in active:
             report.checked += 1
             try:
-                remote = self._fetch_status(order, account_id)
+                remote = self._fetch_status(order)
             except Exception as exc:  # noqa: BLE001 - a read error must never transition an order
                 report.errors += 1
                 logger.warning("Status read failed for order %s: %s",
@@ -210,39 +207,18 @@ class StatusSyncer:
     # ------------------------------------------------------------------ #
     # Remote lookup
     # ------------------------------------------------------------------ #
-    def _resolve_account_id(self) -> str:
-        try:
-            me = self._client.me()
-        except Exception:  # noqa: BLE001 - optional context; absence is tolerated
-            return ""
-        if isinstance(me, dict):
-            for key in ("id", "accountId", "account_id", "userId", "user_id"):
-                val = me.get(key)
-                if val:
-                    return str(val)
-            inner = me.get("user") or me.get("data")
-            if isinstance(inner, dict):
-                for key in ("id", "accountId", "account_id"):
-                    if inner.get(key):
-                        return str(inner[key])
-        return ""
-
-    def _fetch_status(self, order: Order, account_id: str) -> dict[str, Any] | None:
+    def _fetch_status(self, order: Order) -> dict[str, Any] | None:
         """Return the remote status payload for ``order``, or ``None``.
 
-        Without an external id we have nothing to look up — the order stays
-        unresolved (the next executor step or a later sync, once an id exists,
-        will resolve it). The chosen read depends on the order kind.
+        VERIFIED (probe 2026-06-06): ``checkListingStatus`` is an RPC keyed by
+        ``{nftAddress, wallet}`` (not a receipt/listing id). All order kinds use
+        the same listing-status probe; without an nft address or wallet there is
+        nothing to look up and the order stays unresolved.
         """
-        if not order.external_id:
+        if not order.nft or not self._wallet:
             return None
-        if order.kind is OrderKind.LIST:
-            resp = self._client.check_listing_status(order.external_id)
-        else:
-            # Buys and offers: the listing-status read is the most general
-            # status probe we have; CC is assumed to key it by the receipt /
-            # offer id carried in external_id.
-            resp = self._client.check_listing_status(order.external_id)
+        resp = self._client.check_listing_status(
+            nft=order.nft, wallet=self._wallet)
         return resp if isinstance(resp, dict) else None
 
     # ------------------------------------------------------------------ #
