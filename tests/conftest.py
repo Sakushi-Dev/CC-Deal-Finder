@@ -90,6 +90,7 @@ _CONFIG_DEFAULTS: dict[str, Any] = dict(
     live=False,
     auth_provider="none",
     privy_app_id="",
+    privy_client_id="",
     cc_token="",
     reserve_usdc=0.0,
     gas_reserve_sol=0.0,
@@ -152,8 +153,9 @@ class FakeWallet:
             raise WalletError("signing failed (fake)")
         return self._sign_value
 
-    def sign_message(self, message: bytes) -> str:
+    def sign_message(self, message: bytes, *, encoding: str = "base58") -> str:
         self.signed_messages.append(message)
+        self.last_message_encoding = encoding
         if self._sign_error:
             raise WalletError("message signing failed (fake)")
         return "FAKE-MSG-SIG"
@@ -209,10 +211,11 @@ class FakeClient:
         return sum(1 for n, _ in self.calls if n == name)
 
     # -- writes ------------------------------------------------------------ #
-    def initiate_buy(self, *, nft, price, currency="USDC", receipt_id="",
-                     extra=None):
-        self._record("initiate_buy", nft=nft, price=price, currency=currency,
-                     receipt_id=receipt_id, extra=extra)
+    def initiate_buy(self, *, nft, price, wallet, currency="USDC",
+                     funding_source="wallet", extra=None):
+        self._record("initiate_buy", nft=nft, price=price, wallet=wallet,
+                     currency=currency, funding_source=funding_source,
+                     extra=extra)
         self._maybe_raise("initiate_buy")
         return self.responses.get(
             "initiate_buy",
@@ -234,8 +237,9 @@ class FakeClient:
             "create_listing",
             {"transaction": "UNSIGNED-LIST-TX", "listingId": "lst-1"})
 
-    def broadcast(self, *, signed_tx, extra=None):
-        self._record("broadcast", signed_tx=signed_tx, extra=extra)
+    def broadcast(self, *, signed_tx, wallet="", nft="", extra=None):
+        self._record("broadcast", signed_tx=signed_tx, wallet=wallet, nft=nft,
+                     extra=extra)
         self._maybe_raise("broadcast")
         return self.broadcast_response
 
@@ -250,25 +254,18 @@ class FakeClient:
         return self.responses.get("cancel_offer", {"status": "ok"})
 
     # -- reads ------------------------------------------------------------- #
-    def me(self):
-        self._record("me")
-        self._maybe_raise("me")
-        return self.responses.get("me", {"id": "acct-test"})
-
-    def check_listing_status(self, listing_id):
-        self._record("check_listing_status", listing_id=listing_id)
+    def check_listing_status(self, *, nft, wallet):
+        self._record("check_listing_status", nft=nft, wallet=wallet)
         self._maybe_raise("check_listing_status")
-        return self.responses.get("check_listing_status", {"status": "pending"})
+        return self.responses.get(
+            "check_listing_status",
+            {"exists": True, "marketplace": "CC", "listing": {}})
 
-    def account_listings(self, account_id):
-        self._record("account_listings", account_id=account_id)
-        self._maybe_raise("account_listings")
-        return self.responses.get("account_listings", [])
-
-    def account_offers_made(self, account_id):
-        self._record("account_offers_made", account_id=account_id)
-        self._maybe_raise("account_offers_made")
-        return self.responses.get("account_offers_made", [])
+    def calc_listing_fee(self, *, nft, price, currency="USDC"):
+        self._record("calc_listing_fee", nft=nft, price=price,
+                     currency=currency)
+        self._maybe_raise("calc_listing_fee")
+        return self.responses.get("calc_listing_fee", {"fee": 0})
 
 
 @pytest.fixture

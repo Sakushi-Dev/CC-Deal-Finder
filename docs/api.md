@@ -313,28 +313,82 @@ table). The trader obtains it through a `SessionProvider`
 The token is sent as `Authorization: Bearer <token>`, held only in memory and
 **redacted from all logs**. It is never written to the order store.
 
-### Privy SIWS handshake (ASSUMED — ETAPPE 4)
+### Privy SIWS handshake (VERIFIED — end-to-end 2026-06-06)
 
-The provider is selected by `TRADER_AUTH_PROVIDER` (env-only: `none` | `static`
-| `privy`). The `privy` flow
-([collectorcrypt/trader/siws.py](../collectorcrypt/trader/siws.py)) is assumed
-to be:
+> **Verified end-to-end** on 2026-06-06: a captured live `authenticate` request
+> plus a full handshake from `PrivySiwsProvider` that minted a Privy bearer JWT,
+> which the CollectorCrypt trading API then accepted. Key correction from the
+> earlier probe: **SIWS does not run on the CC API** — it runs on **Privy's own
+> API host** `https://auth.privy.io`. The CC API base (`api.collectorcrypt.com`)
+> returns `404` for these paths.
 
-1. **init** — `POST api/v1/siws/init` with `{ "address": "<wallet>" }`.
-   ASSUMED to return `{ "nonce": "...", "message": "<optional ready message>" }`.
-   Header `privy-app-id: <TRADER_PRIVY_APP_ID>` is sent when configured.
-2. **sign** — if no ready `message` is returned, a standard SIWS/EIP-4361
-   message is built locally and signed with the wallet keypair
-   (`Wallet.sign_message`, base58 signature). The private key never leaves the
-   process.
-3. **authenticate** — `POST api/v1/siws/authenticate` with
-   `{ "address", "message", "signature", "nonce", "walletClientType":"solana" }`.
-   ASSUMED to return a bearer token under one of
-   `token` / `access_token` / `accessToken` / `jwt` (optionally nested under
-   `session`/`data`/`user`) plus an expiry under
-   `expires_at` / `expiresAt` / `exp` (absolute) or `expires_in` / `ttl`
-   (relative). With no expiry, a conservative 1h TTL is assumed so the session
-   refreshes proactively.
+**Confirmed environment** (extracted from the public frontend bundle — these are
+client-side public values, not secrets):
+
+| Value | Source |
+|-------|--------|
+| Privy auth host | `https://auth.privy.io` |
+| `PRIVY_APP_ID` | `cmdgt21w400lgky0mkn069jui` |
+| `PRIVY_CLIENT_ID` | `client-WY6NvtFJDWADQMppqbxv6hSrGa1igpPo8eVK9DfhnSGTi` |
+| `NETWORK` | `mainnet` |
+
+**Required headers** (Privy enforces a CORS-style check — without `Origin` it
+returns `403 missing_origin`):
+
+```
+Content-Type: application/json
+Origin: https://collectorcrypt.com
+Referer: https://collectorcrypt.com/
+privy-app-id: cmdgt21w400lgky0mkn069jui
+privy-client-id: client-WY6NvtFJDWADQMppqbxv6hSrGa1igpPo8eVK9DfhnSGTi
+privy-client: react-auth:3.28.0
+privy-ca-id: <per-device uuid v4>
+```
+
+1. **init** — ✅ **VERIFIED** `POST https://auth.privy.io/api/v1/siws/init`
+   with body `{ "address": "<wallet>" }`. Returns **HTTP 200**:
+
+   ```jsonc
+   { "nonce": "<64-char hex>", "address": "<wallet>",
+     "expires_at": "2026-06-06T21:12:16.666Z" }   // nonce TTL ~10 min, no message
+   ```
+
+2. **sign** — the client builds the SIWS message locally (Privy returns no
+   ready message) and signs it. ⚠️ **The signature is sent base64-encoded**
+   (`Wallet.sign_message(..., encoding="base64")`), *not* base58 — this was the
+   original cause of the authenticate `400`. **Exact Privy Solana template**:
+
+   ```
+   collectorcrypt.com wants you to sign in with your Solana account:
+   <address>
+
+   You are proving you own <address>.
+
+   URI: https://collectorcrypt.com
+   Version: 1
+   Chain ID: mainnet
+   Nonce: <nonce>
+   Issued At: <ISO8601 millis Z>
+   Resources:
+   - https://privy.io
+   ```
+
+3. **authenticate** — ✅ **VERIFIED** `POST .../api/v1/siws/authenticate`.
+   Body (note `walletClientType` is **capitalised** `"Phantom"`, and there is
+   **no** `address`/`nonce` field — the nonce travels inside the signed
+   message):
+
+   ```jsonc
+   { "message": "<full SIWS message>",
+     "signature": "<base64 signature>",
+     "walletClientType": "Phantom",
+     "connectorType": "solana_adapter",
+     "mode": "login-or-sign-up",
+     "message_type": "plain" }
+   ```
+
+   Returns **HTTP 200** with a bearer JWT and an `account_id` of the form
+   `did:privy:<id>`. That JWT is accepted directly by the CC trading API.
 
 **Live-readiness gate** (`siws.check_live_ready`): live trading requires *all*
 of `TRADER_LIVE=true`, a signing wallet, a non-`none` auth provider, and a
@@ -343,15 +397,89 @@ session that can actually be established now. Any missing precondition raises
 
 #### Open / unverified (SIWS)
 
-- Exact init/authenticate paths and whether `privy-app-id` (or another app
-  identifier/header) is required.
-- The precise SIWS message fields CollectorCrypt validates (domain, chain id
-  string `solana:mainnet`, statement wording).
-- The exact JSON keys for the token and its expiry in the auth response.
-- Whether a separate refresh endpoint exists or re-running SIWS is the intended
-  refresh path (current implementation re-runs SIWS on expiry).
+- The **exact token + expiry JSON keys** in the authenticate response were not
+  captured directly; `_extract_token`/`_extract_expiry` read the common Privy
+  shapes defensively (the live handshake produced a usable token + expiry).
+- **CC trading API accepts the Privy bearer token directly** — ✅ VERIFIED: a
+  Privy session JWT sent as `Authorization: Bearer <jwt>` is accepted by
+  `api.collectorcrypt.com`. No CC-side exchange is required. **There is no CC
+  `users/me`** — `/api/v1/users/me` is a *Privy* path (404 on the CC API);
+  account identity comes from the wallet address.
+- Refresh strategy: there is no separate refresh endpoint wired; the provider
+  re-runs the full SIWS handshake on expiry (the wallet can always re-sign).
 
-### Assumed trading flows
+### Trading API transport (VERIFIED — probe 2026-06-06)
+
+> Confirmed live with a real bearer token (read-only: the only write probed was
+> `marketplace/buy`, which returns an **unsigned** transaction — it was never
+> signed or broadcast, so nothing settled on-chain).
+
+The CC API base is `https://api.collectorcrypt.com/`. The frontend uses three
+call styles (extracted from the bundle's axios wrappers):
+
+| Style | HTTP | URL | Body | Used by |
+|-------|------|-----|------|---------|
+| REST POST (`bE`) | POST | `<path>` | object | `marketplace/buy`, `marketplace/broadcast`, `marketplace/make-offer`, `marketplace/list`, `marketplace/cancel-listing`, `marketplace/cancel-offer`, `marketplace/accept-offer` |
+| RPC `/v2` (`Qk`) | POST | `/v2` | `{method, params}` | `checkListingStatus` |
+| RPC root (`kM`) | POST | `/` | `{method, params}` | `createQuickBuyTx`, `createMakeOfferTx`, `createCancelListingTx`, `getCardOffers` |
+
+Auth: `Authorization: Bearer <privy-jwt>` plus `Origin: https://collectorcrypt.com`.
+
+### Trading flows (VERIFIED — probe 2026-06-06)
+
+1. **Buy (prepare)** — ✅ **VERIFIED HTTP 201**
+   `POST https://api.collectorcrypt.com/marketplace/buy`:
+
+   ```jsonc
+   { "currency": "USDC", "nftAddress": "<nft>", "price": 900,
+     "wallet": "<buyer wallet>", "fundingSource": "wallet" }
+   ```
+
+   Response is a **bare base64 `VersionedTransaction` string** (the response
+   body *is* the base64 tx — there is no JSON envelope). The frontend does
+   `VersionedTransaction.deserialize(Buffer.from(response.data, "base64"))`.
+   `fundingSource` is `"wallet"` (direct) or `"escrow"`. **There is no
+   `receiptId` in the buy body** (the old assumption was wrong); the required
+   fields are `currency`, `nftAddress`, `price`, `wallet`.
+
+2. **Listing status** — ✅ **VERIFIED HTTP 200**
+   `POST https://api.collectorcrypt.com/v2`:
+
+   ```jsonc
+   { "method": "checkListingStatus",
+     "params": { "nftAddress": "<nft>", "wallet": "<wallet>" } }
+   ```
+
+   `params` is **objectStrict**: exactly `nftAddress` + `wallet`, any other key
+   (e.g. `receiptId`) is rejected. Response shape:
+   `{ "exists": bool, "marketplace": str|null, "listing": object|null }`.
+
+3. **Sign** — done locally by `Wallet.sign_transaction` (`solders`,
+   base64 `VersionedTransaction`). No key ever leaves the process.
+
+4. **Broadcast** — `POST marketplace/broadcast` (body from the bundle):
+
+   ```jsonc
+   { "signedTransaction": "<base64 signed tx>", "wallet": "<wallet>",
+     "nftAddress": "<nft, optional>" }
+   ```
+
+   The old assumption (`{ signedTransaction }` only) was **missing `wallet`**.
+   This is the only step that finalises a trade, so it is **never retried**.
+
+#### Open / unverified (trading)
+
+- The **broadcast response** shape (signature / receipt keys) — not probed (would
+  require signing+broadcasting a real tx = a real purchase).
+- The **offer / list / cancel** bodies (`marketplace/make-offer`,
+  `marketplace/list`, `createMakeOfferTx`, etc.) — paths confirmed from the
+  bundle map, bodies not yet probed.
+- The `checkListingStatus` **status vocabulary** when a listing *is* active
+  (probed listing returned `exists:false` for our wallet).
+
+<!-- legacy assumed section retained below for history -->
+
+### Assumed trading flows (SUPERSEDED by the verified section above)
 
 The buy / offer / list flow is assumed to be a two-step **prepare → broadcast**:
 
