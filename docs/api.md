@@ -285,3 +285,304 @@ See above for the snapshot date.
    - `400` → path exists, parameters missing/wrong
    - `401` → auth required
    - `404` → no GET (often POST-only) or path is wrong
+
+---
+
+## Trading client integration boundary (trader)
+
+> **Status:** the authenticated trading client
+> ([collectorcrypt/trader/ccapi.py](../collectorcrypt/trader/ccapi.py)) is built
+> up to a *clean integration boundary*. It can authenticate, send and interpret
+> the trading requests below, but it is **not** wired into live execution yet
+> (ETAPPE 5) and the request/response shapes marked **ASSUMED** are
+> reverse-engineered from the frontend bundle and **unverified**. Do not enable
+> live spending until each flow is confirmed against a funded test wallet.
+
+### Authentication
+
+All trading endpoints require a Privy bearer token (see the *Auth (Privy)*
+table). The trader obtains it through a `SessionProvider`
+([collectorcrypt/trader/auth.py](../collectorcrypt/trader/auth.py)):
+
+- `NullSessionProvider` (default) — owns no credentials, always refuses. With
+  it in place no authenticated request can be sent.
+- `StaticTokenProvider` — wraps a pre-obtained token (`TRADER_CC_TOKEN`) for
+  integration testing of the transport.
+- `PrivySiwsProvider` — the real Sign-In-With-Solana handshake (ETAPPE 4).
+
+The token is sent as `Authorization: Bearer <token>`, held only in memory and
+**redacted from all logs**. It is never written to the order store.
+
+### Privy SIWS handshake (ASSUMED — ETAPPE 4)
+
+The provider is selected by `TRADER_AUTH_PROVIDER` (env-only: `none` | `static`
+| `privy`). The `privy` flow
+([collectorcrypt/trader/siws.py](../collectorcrypt/trader/siws.py)) is assumed
+to be:
+
+1. **init** — `POST api/v1/siws/init` with `{ "address": "<wallet>" }`.
+   ASSUMED to return `{ "nonce": "...", "message": "<optional ready message>" }`.
+   Header `privy-app-id: <TRADER_PRIVY_APP_ID>` is sent when configured.
+2. **sign** — if no ready `message` is returned, a standard SIWS/EIP-4361
+   message is built locally and signed with the wallet keypair
+   (`Wallet.sign_message`, base58 signature). The private key never leaves the
+   process.
+3. **authenticate** — `POST api/v1/siws/authenticate` with
+   `{ "address", "message", "signature", "nonce", "walletClientType":"solana" }`.
+   ASSUMED to return a bearer token under one of
+   `token` / `access_token` / `accessToken` / `jwt` (optionally nested under
+   `session`/`data`/`user`) plus an expiry under
+   `expires_at` / `expiresAt` / `exp` (absolute) or `expires_in` / `ttl`
+   (relative). With no expiry, a conservative 1h TTL is assumed so the session
+   refreshes proactively.
+
+**Live-readiness gate** (`siws.check_live_ready`): live trading requires *all*
+of `TRADER_LIVE=true`, a signing wallet, a non-`none` auth provider, and a
+session that can actually be established now. Any missing precondition raises
+`CCAuthError` — the trader refuses to act rather than run unauthenticated.
+
+#### Open / unverified (SIWS)
+
+- Exact init/authenticate paths and whether `privy-app-id` (or another app
+  identifier/header) is required.
+- The precise SIWS message fields CollectorCrypt validates (domain, chain id
+  string `solana:mainnet`, statement wording).
+- The exact JSON keys for the token and its expiry in the auth response.
+- Whether a separate refresh endpoint exists or re-running SIWS is the intended
+  refresh path (current implementation re-runs SIWS on expiry).
+
+### Assumed trading flows
+
+The buy / offer / list flow is assumed to be a two-step **prepare → broadcast**:
+
+1. **Prepare** — POST to `marketplace/buy` · `marketplace/make-offer` ·
+   `marketplace/list`. Assumed request body:
+
+   ```jsonc
+   { "nftAddress": "<nft>", "price": 150, "currency": "USDC",
+     "receiptId": "<listing receiptId, buy only>" }
+   ```
+
+   Assumed to return a serialized, **unsigned** Solana transaction for the
+   wallet to sign locally.
+
+2. **Sign** — done locally by `Wallet.keypair()` (`solders`). No key ever
+   leaves the process; CC never sees the private key.
+
+3. **Broadcast** — POST the signed transaction to `marketplace/broadcast`:
+
+   ```jsonc
+   { "signedTransaction": "<base64/base58 signed tx>" }
+   ```
+
+   Assumed to return the on-chain signature plus a receipt id. This is the only
+   step that finalises a trade, so the client **never retries it automatically**
+   — idempotency is enforced upstream via the persisted `client_order_id`.
+
+### Error & retry policy
+
+| Outcome      | Mapped error          | Retried automatically? |
+|--------------|-----------------------|------------------------|
+| 401 / 403    | `CCAuthError`         | no (session invalidated) |
+| 429          | `CCRateLimitError`    | yes, honouring `Retry-After` (reads only) |
+| 4xx          | `CCClientError`       | no |
+| 5xx          | `CCServerError`       | yes, backoff (reads only) |
+| network/timeout | `CCNetworkError`   | yes, backoff (reads only) |
+
+State-changing trading calls (`buy`/`make-offer`/`list`/`broadcast`/`cancel-*`)
+are **never** auto-retried — a silent retry could double-spend.
+
+### Live executor flow (ETAPPE 5)
+
+The `LiveExecutor`
+([collectorcrypt/trader/executor.py](../collectorcrypt/trader/executor.py))
+drives the assumed flow above per order, with no fire-and-forget. It is reached
+**only** when the engine confirms live mode is fully armed
+(`TRADER_LIVE=true` **and** a signing wallet **and** a non-`none` auth provider);
+demo cycles are always dry-run.
+
+Per-order state machine (persisted after every transition):
+
+```
+PLANNED ─preflight─▶ SUBMITTED ─sign─▶ SIGNED ─broadcast─▶ PENDING ─▶ CONFIRMED  (buy)
+                                                                   └─▶ OPEN       (offer rests)
+   └───────────────────────── any failure ─────────────────────────▶ FAILED
+```
+
+**Preflight before every send** (a failed check fails *that* order and the
+batch continues; nothing is sent):
+
+- **Duplicate guard** — if the store already holds the same `client_order_id`
+  past `PLANNED`, the order is skipped (protects cycle replays / restarts).
+- **Budget guard** — the order cost must fit the remaining per-cycle budget
+  envelope; each confirmed buy / opened offer decrements it.
+- **Price/market sanity** — refuses to trade with no market reference, or at/
+  above market value (the thesis is buying below market).
+
+**Sign + broadcast** — the unsigned transaction returned by prepare is signed by
+`Wallet.sign_transaction` (base64-decode → `solders` `VersionedTransaction`,
+legacy fallback → re-encode base64) and broadcast. A broadcast accepted but not
+yet on-chain stays `PENDING` for the reconciler — a successful send, not a
+failure. Any `CCApiError`/`WalletError` marks the order `FAILED` (never retried).
+
+**Relisting** — a confirmed buy with a positive resale price creates its linked
+`LIST` order as a **`PLANNED` relist candidate** and persists it; the live
+exit/relisting flow itself is **ETAPPE 6**, so nothing is listed on-chain yet.
+
+#### Open / unverified (live executor)
+
+- The exact response keys for the unsigned transaction (`transaction` / `tx` /
+  `serializedTransaction` … are accepted defensively), the receipt/offer/listing
+  id, the on-chain signature, and the confirmation/fill status.
+- The transaction wire encoding (base64 assumed) and version (v0 assumed, legacy
+  fallback) — `Wallet.sign_transaction` raises clearly if it cannot parse.
+- Whether the wallet is the sole required signer at the prepare stage (assumed),
+  or whether the marketplace co-signs and partial signatures must be preserved.
+- Whether an accepted offer reports settlement on `broadcast` or only via a
+  later `checkListingStatus` / status sync.
+
+### Live exit / relisting + status sync (ETAPPE 6)
+
+Two maintenance steps run at the end of every **live** cycle (never in
+dry-run/demo), after new buys/offers are placed:
+
+1. **Status sync** (`reconcile.StatusSyncer`) — authoritative reconciliation.
+   For each in-flight order (`SUBMITTED`/`SIGNED`/`PENDING`/`OPEN`) it asks CC
+   for the real status and transitions **only on clear evidence**:
+   - reported confirmed → `CONFIRMED` (a confirmed buy with a resale price
+     spawns its linked `PLANNED` relist candidate, idempotently);
+   - reported accepted/filled (offer) → `CONFIRMED`;
+   - reported cancelled/withdrawn/expired → `CANCELLED`.
+   An order with no external id, an unreadable status, or an ambiguous response
+   is left untouched and counted *unresolved*. A read error never transitions
+   an order. Uses the client's safe, retryable reads (`me`,
+   `checkListingStatus`).
+
+2. **Exit / relisting** (`LiveExecutor.relist`) — loads the persisted relist
+   candidates (`store.relist_candidates()`) and drives each onto the market via
+   `marketplace/list` → sign → broadcast, with the same per-order state machine
+   (`PLANNED → SUBMITTED → SIGNED → PENDING → CONFIRMED`). Sell-side preflight:
+   a positive resale price and a duplicate-listing guard (no budget check —
+   listing an owned card does not spend USDC). The relist price is the planned
+   `market × (1 − TRADER_RESELL_DISCOUNT_PCT/100)`.
+
+Running the sync *before* the exit pass means a buy confirmed *this* cycle (only
+discovered via the sync, not at broadcast time) still spawns a relist candidate
+that the exit pass lists in the same cycle.
+
+The cycle report gains `status_sync` (the `StatusSyncReport`: counts of
+`checked`/`confirmed`/`cancelled`/`relisted_spawned`/`unresolved`/`errors` plus
+`transitions`) and `relisted` (per-listing summaries).
+
+#### Open / unverified (exit + sync)
+
+- The exact status-probe endpoint and payload per order kind (currently
+  `checkListingStatus` is used as the general probe, keyed by `external_id`).
+- The authoritative status vocabulary (the matcher accepts a broad set of
+  confirmed/filled/cancelled synonyms defensively).
+- Whether buys/offers expose a distinct status endpoint separate from listings.
+- Whether listing requires a prior `calcListingFee` call or extra parameters
+  (royalty, expiry) in the `marketplace/list` body.
+
+### Risk engine / limits (ETAPPE 7)
+
+The risk engine
+([collectorcrypt/trader/risk.py](../collectorcrypt/trader/risk.py)) is the final
+gate before any live order is sent — independent of the planner, so a planning
+bug or market anomaly cannot drain the wallet. On every **live** cycle the
+engine evaluates the planned orders against operator-set limits *after*
+planning and *before* the executor runs. Blocked orders are transitioned to
+`FAILED` with a `risk gate: …` detail and **never reach the executor**;
+allowed orders proceed normally. Dry-run/demo cycles are not gated, but the
+posture is still computed for display.
+
+Enforced controls (each limit is `0` = disabled, so existing setups are
+unchanged until an operator opts in):
+
+| Limit env var                      | Control |
+|------------------------------------|---------|
+| `TRADER_MAX_CONSECUTIVE_FAILURES`  | Kill switch — after N real orders fail in a row, **halt all** trading this cycle (and skip the exit/relist pass; the read-only status sync still runs). |
+| `TRADER_MAX_OPEN_POSITIONS`        | Cap on concurrent real in-flight orders. |
+| `TRADER_MAX_SPEND_PER_CYCLE_USD`   | Ceiling on USD committed in one cycle. |
+| `TRADER_MAX_SPEND_PER_DAY_USD`     | Rolling 24h ceiling on realized USD spend across cycles. |
+
+Usage is read from the durable store: `open_position_count()` (real active
+orders), `confirmed_spend_since(ts)` (sum of `price_usd` of confirmed,
+non-simulated buys/offers in the last 24h) and `recent_terminal_statuses()`
+(for the consecutive-failure streak). Only spending orders (`buy`/`offer`)
+count against the caps; relists (sells) never do.
+
+**Fail-safe:** any failure to read the risk state resolves to *halt* — zero
+orders sent. `RiskEngine.evaluate` never raises; the caller simply respects
+`decision.allowed`.
+
+The cycle report gains `risk` (the posture: `enabled`, `halted`, `limits`,
+`usage`, `cycle.{planned_spend,allowed,blocked}`, `breaches`). The manager
+snapshot also exposes a read-only `risk` posture (no pending orders) so the
+dashboard shows the caps, today's spend, open positions and kill-switch state
+even before a cycle runs.
+
+#### Open / unverified (risk)
+
+- "Spend" counts a confirmed offer's full `price_usd` as realized; whether an
+  accepted offer settles for exactly the bid is assumed.
+- The daily window is a simple rolling 24h on `created_at`; it does not align
+  to a wallet/exchange settlement day.
+
+### Crash recovery / auto-resume (ETAPPE 8)
+
+The durable store already preserves every order and its lifecycle across a
+restart, but the **loop control state** (active / paused / interval) used to
+live only in memory — so after a crash the bot sat idle until an operator
+clicked *Start loop*. The manager
+([collectorcrypt/trader/manager.py](../collectorcrypt/trader/manager.py)) now
+persists that state and can opt-in resume it.
+
+* **Persisted loop state.** Every loop control change (`start_loop`, `pause`,
+  `resume`, `stop`) writes `{loop_active, paused, interval}` to a small
+  `runtime` key/value table in the store (`set_runtime`/`get_runtime`). It
+  holds **no secrets** — only public control flags.
+* **Startup reconcile.** On construction the manager runs a single read-only
+  reconciliation so the UI immediately reflects any orders that were in flight
+  when the process stopped. This never submits, signs or cancels anything; the
+  authoritative `StatusSyncer` resolves them on the next live cycle.
+* **Opt-in auto-resume.** Only when `TRADER_AUTO_RESUME=true` **and** the loop
+  was active before the restart is the worker restarted — in exactly the mode
+  that is configured now. Like `TRADER_LIVE`, the flag is read **from the
+  environment only** (never from the UI overrides file), so a crash can never
+  silently arm trading. The live/auth gates are unchanged: auto-resume only
+  continues the loop in the already-configured mode; it does not enable live
+  trading by itself.
+
+The manager snapshot gains a `recovery` block:
+
+| Field          | Meaning |
+|----------------|---------|
+| `performed`    | Recovery ran at startup. |
+| `in_flight`    | Active orders found by the startup reconcile. |
+| `was_active`   | The loop was active in the persisted state. |
+| `auto_resume`  | `TRADER_AUTO_RESUME` is set. |
+| `resumed`      | The loop was actually restarted (needs both of the above). |
+
+**Fail-safe:** persistence and recovery are best-effort and never block the
+control flow or startup — a store error leaves the in-memory state
+authoritative and defaults auto-resume to *off*.
+
+#### Open / unverified (recovery)
+
+- Auto-resume restores the loop in the persisted mode (e.g. paused stays
+  paused); it does not retroactively run cycles missed while the process was
+  down.
+- A still-running second instance pointing at the same store could both resume;
+  single-instance operation is assumed.
+
+### Open / unverified
+
+- Exact field names and casing of every POST body (camelCase assumed).
+- Whether `price` is USD, USDC base units, or lamports for SOL listings.
+- The transaction encoding expected by `broadcast` (base64 vs base58).
+- Whether offers/listings return their own id immediately or only after a
+  follow-up `checkListingStatus` / `blockchain/listing/{id}` sync.
+- Rate-limit headers actually emitted by the API (we honour `Retry-After` if
+  present, otherwise fall back to the shared backoff schedule).
+

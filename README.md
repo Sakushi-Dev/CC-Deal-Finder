@@ -99,7 +99,8 @@ Alternatively, on Windows double-click [`start.bat`](start.bat) — starts the a
 ├── requirements.txt             # Flask, requests, solders, python-dotenv
 ├── start.bat                    # Windows launcher
 ├── trade.py                     # Autonomous trader CLI (dry-run by default)
-├── .env.example                 # Trader config template (copy to .env)
+├── .env.example                 # Connection & security vars (copy to .env)
+├── trader_settings.example.json # Strategy tuning defaults (copy to trader_settings.json)
 ├── collectorcrypt/
 │   ├── __init__.py              # exports create_app
 │   ├── config.py                # URLs, timeouts, retry policy, limits
@@ -108,7 +109,7 @@ Alternatively, on Windows double-click [`start.bat`](start.bat) — starts the a
 │   ├── scanner.py               # ScanManager – background worker (deals)
 │   ├── web.py                   # Flask factory + blueprints (views, api)
 │   └── trader/                  # Autonomous trader (local, dry-run by default)
-│       ├── config.py            # settings from env / .env
+│       ├── config.py            # config: secrets from .env, tunables from JSON
 │       ├── wallet.py            # Solana RPC balances + (live) keypair signing
 │       ├── strategy.py          # CC-only, quantity-first, escalation (pure)
 │       ├── engine.py            # one decision cycle (source → plan → execute)
@@ -175,8 +176,11 @@ that wallet; Phantom is only where it was created and funded.
 ### Setup & run
 
 ```powershell
-# 1. configure (copy template, then edit .env)
+# 1. configure connection & security (copy template, then edit .env)
 copy .env.example .env
+
+# 1b. (optional) start from the strategy tuning defaults
+copy trader_settings.example.json trader_settings.json
 
 # 2. dry-run: one cycle, human-readable report (spends nothing)
 python trade.py
@@ -203,9 +207,11 @@ The bot also has a web dashboard inside the app at `/trader`:
 - **Planned orders** — the direct buys and offers the bot would place this cycle.
 - **History** — every completed cycle, persisted locally to the git-ignored
   `trade_history.jsonl`.
-- **Settings** — edit the same knobs as `.env` at runtime (saved to the
-  git-ignored `trader_settings.json`). The private key and the live switch stay
-  in `.env` and **cannot** be changed from the UI.
+- **Settings** — edit the strategy tuning knobs at runtime (saved to the
+  git-ignored `trader_settings.json`; defaults ship in
+  `trader_settings.example.json`). The private key, the live switch, the auth
+  credentials and auto-resume stay in `.env` and **cannot** be changed from the
+  UI.
 
 ## Architecture
 
