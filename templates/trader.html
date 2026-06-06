@@ -111,6 +111,33 @@
   <span class="meta" id="statUpdated"></span>
 </div>
 
+<!-- Live execution / safety posture (ETAPPE 5) -->
+<div id="liveBar" class="stats" style="display:none;">
+  <span><span id="armPill" class="status-pill status-idle">dry-run (safe)</span></span>
+  <span>Auth: <b id="authProvider">none</b></span>
+  <span>Active: <b id="ordActive">0</b></span>
+  <span>Open offers: <b id="ordOpen">0</b></span>
+  <span>Pending: <b id="ordPending">0</b></span>
+  <span>Failed: <b id="ordFailed">0</b></span>
+  <span><span id="reconPill" class="status-pill status-idle">reconciled</span></span>
+  <span class="meta" id="armReasons"></span>
+</div>
+
+<!-- Risk limits / kill switch posture (ETAPPE 7) -->
+<div id="riskBar" class="stats" style="display:none;">
+  <span><span id="riskPill" class="status-pill status-idle">no limits</span></span>
+  <span>Spend today: <b id="riskSpendDay">0</b><span id="riskSpendCap" class="meta"></span></span>
+  <span>Open: <b id="riskOpen">0</b><span id="riskOpenCap" class="meta"></span></span>
+  <span>Fails in a row: <b id="riskFails">0</b><span id="riskFailCap" class="meta"></span></span>
+  <span class="meta" id="riskBreaches"></span>
+</div>
+
+<!-- Crash-recovery / auto-resume notice (ETAPPE 8) -->
+<div id="recoveryBar" class="stats" style="display:none;">
+  <span><span id="recoveryPill" class="status-pill status-idle">recovered</span></span>
+  <span class="meta" id="recoveryDetail"></span>
+</div>
+
 <!-- Overview panel -->
 <div class="panel active" data-panel="overview">
   <div id="overviewEmpty" class="empty">No cycle run yet. Click “Run cycle now”.</div>
@@ -179,6 +206,29 @@
     <tbody></tbody>
   </table>
   <div id="executedEmpty" class="empty">Nothing bought or offered yet.</div>
+</div>
+
+<!-- Live exit / relisting + authoritative status sync (ETAPPE 6) -->
+<div class="trader-section" id="exitSection" style="display:none;">
+  <h3>Resold / relisted <span id="relistCount" class="count">0</span></h3>
+  <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+    Confirmed buys are put back on the market this cycle. A status sync first
+    asks CollectorCrypt for the real state of every in-flight order, so a buy
+    that only just confirmed still gets relisted. Live cycles only.
+  </div>
+  <div class="stats" id="syncBar" style="display:none;">
+    <span>Checked: <b id="syncChecked">0</b></span>
+    <span>Confirmed: <b id="syncConfirmed">0</b></span>
+    <span>Cancelled: <b id="syncCancelled">0</b></span>
+    <span>Relists spawned: <b id="syncSpawned">0</b></span>
+    <span>Unresolved: <b id="syncUnresolved">0</b></span>
+    <span>Read errors: <b id="syncErrors">0</b></span>
+  </div>
+  <table class="trader-table" id="relistTable">
+    <thead><tr><th>#</th><th>Card</th><th>Category</th><th class="num">List price</th><th class="num">Market</th><th>Status</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="relistEmpty" class="empty">No cards relisted this cycle.</div>
 </div>
 {% endblock %}
 

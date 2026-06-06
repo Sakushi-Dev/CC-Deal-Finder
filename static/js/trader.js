@@ -115,7 +115,12 @@
 
     renderTable('executedTable', 'executedEmpty', 'executedCount', (r.executed || []).map((it, i) => {
       const action = it.kind === 'offer' ? 'Offer' : 'Buy';
-      const status = it.simulated ? 'simulated' : (it.ok ? 'filled' : 'failed');
+      // For live orders show the real lifecycle status; dry-run/demo are tagged
+      // "simulated". Confirmed/open = good, failed = bad, in-flight = neutral.
+      const status = it.simulated
+        ? 'simulated'
+        : (it.status || (it.ok ? 'filled' : 'failed'));
+      const cls = it.simulated ? '' : (it.ok ? 'good' : (it.status === 'failed' ? 'bad' : ''));
       const profit = num(it.resell_usd) - num(it.price_usd);
       return `
       <tr><td>${i + 1}</td>
@@ -126,7 +131,51 @@
       <td class="num">${fmtUSD(it.market_usd)}</td>
       <td class="num">${fmtUSD(it.resell_usd)}</td>
       <td class="num good">+${fmtUSD(profit)}</td>
-      <td class="${it.ok ? 'good' : 'bad'}">${status}</td></tr>`;
+      <td class="${cls}" title="${escapeHtml(it.detail || '')}">${escapeHtml(status)}</td></tr>`;
+    }));
+  }
+
+  /* ---------------- live exit / relisting + status sync (ETAPPE 6) ------- */
+  function renderExit(report) {
+    report = report || {};
+    const section = $('exitSection');
+    const relisted = report.relisted;
+    const sync = report.status_sync;
+    // Only live cycles carry these keys; hide the whole block otherwise.
+    if (!section) return;
+    if (relisted === undefined && sync === undefined) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+
+    // Status-sync summary bar.
+    const syncBar = $('syncBar');
+    if (sync && !sync.error) {
+      syncBar.style.display = 'flex';
+      setText('syncChecked', sync.checked || 0);
+      setText('syncConfirmed', sync.confirmed || 0);
+      setText('syncCancelled', sync.cancelled || 0);
+      setText('syncSpawned', sync.relisted_spawned || 0);
+      setText('syncUnresolved', sync.unresolved || 0);
+      setText('syncErrors', sync.errors || 0);
+      const errEl = $('syncErrors');
+      if (errEl) errEl.className = num(sync.errors) > 0 ? 'bad' : '';
+    } else {
+      syncBar.style.display = 'none';
+    }
+
+    // Relisted cards table.
+    renderTable('relistTable', 'relistEmpty', 'relistCount', (relisted || []).map((it, i) => {
+      const status = it.status || (it.ok ? 'listed' : 'failed');
+      const cls = it.ok ? 'good' : (status === 'failed' ? 'bad' : '');
+      return `
+      <tr><td>${i + 1}</td>
+      <td>${escapeHtml(it.name || '')}</td>
+      <td>${escapeHtml(it.category || '')}</td>
+      <td class="num">${fmtUSD(it.price_usd)}</td>
+      <td class="num">${fmtUSD(it.market_usd)}</td>
+      <td class="${cls}" title="${escapeHtml(it.detail || '')}">${escapeHtml(status)}</td></tr>`;
     }));
   }
 
@@ -144,6 +193,126 @@
     table.style.display = '';
     empty.style.display = 'none';
     tbody.innerHTML = rows.join('');
+  }
+
+  /* ---------------- live / safety posture ---------------- */
+  function renderLive(auth, counts, recon) {
+    auth = auth || {}; counts = counts || {}; recon = recon || {};
+    $('liveBar').style.display = 'flex';
+
+    const armPill = $('armPill');
+    if (auth.armed) {
+      armPill.className = 'status-pill status-running';
+      armPill.textContent = 'live armed';
+    } else {
+      armPill.className = 'status-pill status-idle';
+      armPill.textContent = 'dry-run (safe)';
+    }
+    setText('authProvider', auth.provider || 'none');
+
+    const active = num(counts.submitted) + num(counts.signed) +
+                   num(counts.pending) + num(counts.open);
+    setText('ordActive', active);
+    setText('ordOpen', counts.open || 0);
+    setText('ordPending', counts.pending || 0);
+    setText('ordFailed', counts.failed || 0);
+    const failedEl = $('ordFailed');
+    if (failedEl) failedEl.className = num(counts.failed) > 0 ? 'bad' : '';
+
+    const reconPill = $('reconPill');
+    const issues = (recon.stale ? recon.stale.length : 0) +
+                   (recon.inconsistencies ? recon.inconsistencies.length : 0);
+    if (recon.error) {
+      reconPill.className = 'status-pill status-stopped';
+      reconPill.textContent = 'reconcile error';
+    } else if (recon.healthy === false || issues > 0) {
+      reconPill.className = 'status-pill status-paused';
+      reconPill.textContent = `${issues} to review`;
+    } else {
+      reconPill.className = 'status-pill status-idle';
+      reconPill.textContent = 'reconciled ✓';
+    }
+
+    const reasons = auth.blocked_reasons || [];
+    setText('armReasons',
+      auth.armed ? '' : (reasons.length ? 'blocked: ' + reasons.join('; ') : ''));
+  }
+
+  /* ---------------- risk limits / kill switch (ETAPPE 7) ---------------- */
+  function renderRisk(risk) {
+    risk = risk || {};
+    const bar = $('riskBar');
+    if (!bar) return;
+    if (risk.error) {
+      bar.style.display = 'flex';
+      const pill = $('riskPill');
+      pill.className = 'status-pill status-stopped';
+      pill.textContent = 'risk error';
+      setText('riskBreaches', escapeHtml(risk.error));
+      return;
+    }
+    bar.style.display = 'flex';
+    const limits = risk.limits || {};
+    const usage = risk.usage || {};
+
+    // Pill: halted (kill switch) > active limits > no limits.
+    const pill = $('riskPill');
+    if (risk.halted) {
+      pill.className = 'status-pill status-stopped';
+      pill.textContent = 'HALTED';
+    } else if (risk.enabled) {
+      pill.className = 'status-pill status-running';
+      pill.textContent = 'limits active';
+    } else {
+      pill.className = 'status-pill status-idle';
+      pill.textContent = 'no limits';
+    }
+
+    const capTxt = (v) => (v && v > 0) ? ` / ${fmtUSD(v)}` : '';
+    const numCap = (v) => (v && v > 0) ? ` / ${v}` : '';
+    setText('riskSpendDay', fmtUSD(usage.spend_today));
+    setText('riskSpendCap', capTxt(limits.max_spend_per_day_usd));
+    setText('riskOpen', usage.open_positions || 0);
+    setText('riskOpenCap', numCap(limits.max_open_positions));
+    setText('riskFails', usage.consecutive_failures || 0);
+    setText('riskFailCap', numCap(limits.max_consecutive_failures));
+
+    const failsEl = $('riskFails');
+    if (failsEl) failsEl.className = (risk.halted) ? 'bad' : '';
+
+    const breaches = risk.breaches || [];
+    setText('riskBreaches',
+      risk.halt_reason ? risk.halt_reason
+        : (breaches.length ? 'blocked: ' + breaches.join('; ') : ''));
+  }
+
+  /* ---------------- crash recovery (ETAPPE 8) ---------------- */
+  function renderRecovery(rec) {
+    const bar = $('recoveryBar');
+    if (!bar) return;
+    rec = rec || {};
+    // Only surface when there is something worth telling the operator: orders
+    // were restored from a previous session, or the loop was auto-resumed.
+    const inFlight = rec.in_flight || 0;
+    if (!rec.performed || (!inFlight && !rec.resumed)) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = 'flex';
+    const pill = $('recoveryPill');
+    const parts = [];
+    if (rec.resumed) {
+      pill.className = 'status-pill status-running';
+      pill.textContent = 'loop resumed';
+      parts.push('auto-resumed the loop from the last session');
+    } else {
+      pill.className = 'status-pill status-idle';
+      pill.textContent = 'recovered';
+    }
+    if (inFlight) {
+      parts.push(`${inFlight} order${inFlight === 1 ? '' : 's'} in-flight restored`);
+    }
+    setText('recoveryDetail', parts.join(' · '));
   }
 
   /* ---------------- history ---------------- */
@@ -184,6 +353,12 @@
 
     renderReport(s.report);
     renderHistory(s.history, s.totals);
+    renderLive(s.auth, s.order_counts, s.reconciliation);
+    renderExit(s.report);
+    // The report's risk posture (live cycle) is richer (breaches/halt); fall
+    // back to the snapshot's read-only posture before any cycle has run.
+    renderRisk((s.report && s.report.risk) || s.risk);
+    renderRecovery(s.recovery);
 
     $('runBtn').disabled = !!s.running;
     $('runBtn').textContent = s.running ? 'Running …' : 'Run cycle now';
