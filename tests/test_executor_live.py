@@ -1,0 +1,469 @@
+"""LiveExecutor tests — the only component that spends real funds.
+
+This is the highest-value module in the suite. It pins, exhaustively, that the
+live executor:
+
+* only ever proceeds when the wallet can sign;
+* enforces every preflight guard (budget, duplicate, market reference, discount);
+* drives the exact state machine SUBMITTED -> SIGNED -> PENDING -> CONFIRMED/OPEN;
+* NEVER auto-retries a broadcast (no double-spend) and fails safely on any error;
+* spawns a relist follow-up only for a confirmed, resaleable buy;
+* keeps the batch going when a single order blows up.
+"""
+from __future__ import annotations
+
+import pytest
+
+from collectorcrypt.trader import executor as ex
+from collectorcrypt.trader.ccapi import (CCNetworkError, CCRateLimitError,
+                                         CCServerError)
+from collectorcrypt.trader.executor import (DryRunExecutor, LiveExecutor,
+                                            _extract_external_id, _extract_signature,
+                                            _extract_tx, _first, _is_cancelled,
+                                            _is_confirmed, _is_filled)
+from collectorcrypt.trader.orders import Order, OrderKind, OrderStatus
+
+from .conftest import (FakeClient, FakeWallet, make_buy, make_config, make_list,
+                       make_offer)
+
+
+def make_live(client=None, wallet=None, *, store=None, volume=1000.0, cfg=None):
+    return LiveExecutor(
+        wallet or FakeWallet(can_sign=True),
+        "https://rpc.test.invalid",
+        client=client or FakeClient(),
+        store=store,
+        available_volume=volume,
+        cfg=cfg or make_config(live=True),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Global preflight: signing wallet required
+# --------------------------------------------------------------------------- #
+def test_no_signing_wallet_fails_all_orders():
+    client = FakeClient()
+    executor = make_live(client=client, wallet=FakeWallet(can_sign=False))
+    orders = [make_buy(nft="A"), make_offer(nft="B")]
+    result = executor.execute(orders)
+    assert all(o.status is OrderStatus.FAILED for o in result)
+
+
+def test_no_signing_wallet_sends_nothing():
+    client = FakeClient()
+    executor = make_live(client=client, wallet=FakeWallet(can_sign=False))
+    executor.execute([make_buy(nft="A")])
+    assert client.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Buy happy path
+# --------------------------------------------------------------------------- #
+def test_buy_confirmed():
+    client = FakeClient()
+    executor = make_live(client=client)
+    [buy] = [o for o in executor.execute([make_buy(price_usd=10, market_usd=20,
+                                                   resell_usd=0)])
+             if o.kind is OrderKind.BUY]
+    assert buy.status is OrderStatus.CONFIRMED
+
+
+def test_buy_walks_full_state_machine():
+    client = FakeClient()
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    steps = [h["to"] for h in buy.history]
+    assert steps == ["submitted", "signed", "pending", "confirmed"]
+
+
+def test_buy_calls_initiate_then_broadcast():
+    client = FakeClient()
+    executor = make_live(client=client)
+    executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert client.call_names() == ["initiate_buy", "broadcast"]
+
+
+def test_confirmed_buy_with_resell_spawns_relist():
+    client = FakeClient()
+    executor = make_live(client=client)
+    result = executor.execute([make_buy(price_usd=10, market_usd=20,
+                                        resell_usd=18)])
+    lists = [o for o in result if o.kind is OrderKind.LIST]
+    assert len(lists) == 1
+    assert lists[0].status is OrderStatus.PLANNED  # deferred, not sent
+    assert lists[0].price_usd == 18
+
+
+def test_confirmed_buy_without_resell_no_relist():
+    client = FakeClient()
+    executor = make_live(client=client)
+    result = executor.execute([make_buy(price_usd=10, market_usd=20,
+                                        resell_usd=0)])
+    assert all(o.kind is not OrderKind.LIST for o in result)
+
+
+def test_buy_pending_when_not_confirmed():
+    client = FakeClient()
+    client.broadcast_response = {"signature": "S"}  # no confirmation evidence
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.status is OrderStatus.PENDING
+
+
+def test_buy_records_signature():
+    client = FakeClient()
+    client.broadcast_response = {"status": "confirmed", "signature": "SIGXYZ"}
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.signature == "SIGXYZ"
+
+
+def test_buy_records_external_id():
+    client = FakeClient()
+    client.responses["initiate_buy"] = {"transaction": "tx", "receiptId": "RC9"}
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.external_id == "RC9"
+
+
+# --------------------------------------------------------------------------- #
+# Buy failure paths
+# --------------------------------------------------------------------------- #
+def test_buy_no_tx_fails():
+    client = FakeClient()
+    client.responses["initiate_buy"] = {"receiptId": "x"}  # no transaction
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.status is OrderStatus.FAILED
+    assert client.count("broadcast") == 0
+
+
+def test_buy_sign_failure_fails_order():
+    client = FakeClient()
+    executor = make_live(client=client, wallet=FakeWallet(can_sign=True,
+                                                         sign_error=True))
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.status is OrderStatus.FAILED
+    assert client.count("broadcast") == 0
+
+
+@pytest.mark.parametrize("err", [CCServerError("5xx"), CCNetworkError("net"),
+                                 CCRateLimitError("429")])
+def test_buy_broadcast_error_fails_order_no_retry(err):
+    client = FakeClient()
+    client.errors["broadcast"] = err
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.status is OrderStatus.FAILED
+    assert client.count("broadcast") == 1  # never retried
+
+
+def test_buy_initiate_error_fails_order():
+    client = FakeClient()
+    client.errors["initiate_buy"] = CCServerError("down")
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.status is OrderStatus.FAILED
+
+
+# --------------------------------------------------------------------------- #
+# Preflight guards
+# --------------------------------------------------------------------------- #
+def test_preflight_insufficient_budget_fails():
+    client = FakeClient()
+    executor = make_live(client=client, volume=5.0)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=20)])
+    assert buy.status is OrderStatus.FAILED
+    assert client.calls == []  # never sent
+
+
+def test_preflight_no_market_reference_fails():
+    client = FakeClient()
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=10, market_usd=0)])
+    assert buy.status is OrderStatus.FAILED
+    assert client.calls == []
+
+
+def test_preflight_price_at_or_above_market_fails():
+    client = FakeClient()
+    executor = make_live(client=client)
+    [buy] = executor.execute([make_buy(price_usd=20, market_usd=20)])
+    assert buy.status is OrderStatus.FAILED
+    assert client.calls == []
+
+
+def test_preflight_duplicate_intent_fails(store):
+    # Pre-seed a non-PLANNED order with the same client_order_id.
+    existing = make_buy(nft="DUP", price_usd=10, market_usd=20, cycle_id="c")
+    existing.transition(OrderStatus.CONFIRMED)
+    store.upsert_order(existing)
+
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+    fresh = make_buy(nft="DUP", price_usd=10, market_usd=20, cycle_id="c")
+    [buy] = executor.execute([fresh])
+    assert buy.status is OrderStatus.FAILED
+    assert client.calls == []
+
+
+def test_budget_decrements_across_orders():
+    client = FakeClient()
+    executor = make_live(client=client, volume=15.0)
+    result = executor.execute([
+        make_buy(nft="A", price_usd=10, market_usd=20),
+        make_buy(nft="B", price_usd=10, market_usd=20),
+    ])
+    buys = [o for o in result if o.kind is OrderKind.BUY]
+    statuses = {o.nft: o.status for o in buys}
+    assert statuses["A"] is OrderStatus.CONFIRMED
+    assert statuses["B"] is OrderStatus.FAILED  # only 5 left after first buy
+
+
+# --------------------------------------------------------------------------- #
+# Offer
+# --------------------------------------------------------------------------- #
+def test_offer_opens():
+    client = FakeClient()
+    client.broadcast_response = {"status": "ok"}  # accepted, not filled
+    executor = make_live(client=client)
+    [offer] = executor.execute([make_offer(price_usd=8, market_usd=20)])
+    assert offer.status is OrderStatus.OPEN
+
+
+def test_offer_filled_confirms():
+    client = FakeClient()
+    client.broadcast_response = {"status": "filled"}
+    executor = make_live(client=client)
+    [offer] = executor.execute([make_offer(price_usd=8, market_usd=20)])
+    assert offer.status is OrderStatus.CONFIRMED
+
+
+def test_offer_calls_make_offer():
+    client = FakeClient()
+    executor = make_live(client=client)
+    executor.execute([make_offer(price_usd=8, market_usd=20)])
+    assert "make_offer" in client.call_names()
+
+
+def test_offer_no_tx_fails():
+    client = FakeClient()
+    client.responses["make_offer"] = {"offerId": "x"}
+    executor = make_live(client=client)
+    [offer] = executor.execute([make_offer(price_usd=8, market_usd=20)])
+    assert offer.status is OrderStatus.FAILED
+
+
+def test_offer_budget_guard():
+    client = FakeClient()
+    executor = make_live(client=client, volume=5.0)
+    [offer] = executor.execute([make_offer(price_usd=8, market_usd=20)])
+    assert offer.status is OrderStatus.FAILED
+
+
+# --------------------------------------------------------------------------- #
+# Relist (exit/sell side)
+# --------------------------------------------------------------------------- #
+def test_relist_confirms():
+    client = FakeClient()
+    executor = make_live(client=client)
+    listing = make_list(nft="N", price_usd=25, cycle_id="c")
+    out = executor.relist(listing)
+    assert out.status is OrderStatus.CONFIRMED
+    assert "create_listing" in client.call_names()
+
+
+def test_relist_rejects_non_list_order():
+    client = FakeClient()
+    executor = make_live(client=client)
+    out = executor.relist(make_buy(price_usd=10, market_usd=20))
+    assert out.status is OrderStatus.FAILED
+    assert client.calls == []
+
+
+def test_relist_requires_signing_wallet():
+    client = FakeClient()
+    executor = make_live(client=client, wallet=FakeWallet(can_sign=False))
+    out = executor.relist(make_list(nft="N", price_usd=25, cycle_id="c"))
+    assert out.status is OrderStatus.FAILED
+
+
+def test_relist_zero_price_fails():
+    client = FakeClient()
+    executor = make_live(client=client)
+    out = executor.relist(make_list(nft="N", price_usd=0, cycle_id="c"))
+    assert out.status is OrderStatus.FAILED
+    assert client.calls == []
+
+
+def test_relist_no_tx_fails():
+    client = FakeClient()
+    client.responses["create_listing"] = {"listingId": "x"}
+    executor = make_live(client=client)
+    out = executor.relist(make_list(nft="N", price_usd=25, cycle_id="c"))
+    assert out.status is OrderStatus.FAILED
+
+
+def test_relist_never_raises_on_client_error():
+    client = FakeClient()
+    client.errors["create_listing"] = CCServerError("boom")
+    executor = make_live(client=client)
+    out = executor.relist(make_list(nft="N", price_usd=25, cycle_id="c"))
+    assert out.status is OrderStatus.FAILED
+
+
+def test_relist_no_budget_check():
+    # A relist must succeed even with zero remaining budget (selling, not buying).
+    client = FakeClient()
+    executor = make_live(client=client, volume=0.0)
+    out = executor.relist(make_list(nft="N", price_usd=25, cycle_id="c"))
+    assert out.status is OrderStatus.CONFIRMED
+
+
+# --------------------------------------------------------------------------- #
+# Batch resilience + persistence
+# --------------------------------------------------------------------------- #
+def test_batch_continues_after_one_failure():
+    client = FakeClient()
+    executor = make_live(client=client)
+    result = executor.execute([
+        make_buy(nft="BAD", price_usd=20, market_usd=20),   # fails preflight
+        make_buy(nft="GOOD", price_usd=10, market_usd=20),  # succeeds
+    ])
+    statuses = {o.nft: o.status for o in result if o.kind is OrderKind.BUY}
+    assert statuses["BAD"] is OrderStatus.FAILED
+    assert statuses["GOOD"] is OrderStatus.CONFIRMED
+
+
+def test_execute_persists_every_transition(store):
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+    [buy] = [o for o in executor.execute([make_buy(nft="P", price_usd=10,
+                                                   market_usd=20, cycle_id="c")])
+             if o.kind is OrderKind.BUY]
+    saved = store.get_by_client_order_id(buy.client_order_id)
+    assert saved is not None
+    assert saved.status is OrderStatus.CONFIRMED
+
+
+def test_returns_same_order_objects():
+    client = FakeClient()
+    executor = make_live(client=client)
+    order = make_buy(price_usd=10, market_usd=20)
+    result = executor.execute([order])
+    assert order in result
+
+
+# --------------------------------------------------------------------------- #
+# DryRunExecutor (no side effects)
+# --------------------------------------------------------------------------- #
+def test_dryrun_buy_confirms_and_relists():
+    result = DryRunExecutor().execute([make_buy(price_usd=10, market_usd=20,
+                                                resell_usd=18, simulated=True)])
+    kinds = sorted(o.kind.value for o in result)
+    assert kinds == ["buy", "list"]
+    assert all(o.status is OrderStatus.CONFIRMED for o in result)
+
+
+def test_dryrun_buy_no_resell_no_relist():
+    result = DryRunExecutor().execute([make_buy(price_usd=10, resell_usd=0,
+                                                simulated=True)])
+    assert all(o.kind is not OrderKind.LIST for o in result)
+
+
+def test_dryrun_offer_opens():
+    [offer] = DryRunExecutor().execute([make_offer(price_usd=8, simulated=True)])
+    assert offer.status is OrderStatus.OPEN
+
+
+def test_dryrun_list_confirms():
+    [lst] = DryRunExecutor().execute([make_list(nft="N", price_usd=25,
+                                               cycle_id="c", simulated=True)])
+    assert lst.status is OrderStatus.CONFIRMED
+
+
+def test_dryrun_touches_no_client_or_wallet():
+    # DryRunExecutor has no client/wallet at all — proving zero side effects.
+    result = DryRunExecutor().execute([make_buy(price_usd=10, market_usd=20)])
+    assert result  # ran without any client/wallet dependency
+
+
+# --------------------------------------------------------------------------- #
+# Response-interpretation helpers (parametrized for breadth)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("key", ["transaction", "tx", "unsignedTransaction",
+                                 "serializedTransaction", "txData",
+                                 "encodedTransaction"])
+def test_extract_tx_keys(key):
+    assert _extract_tx({key: "TXDATA"}) == "TXDATA"
+
+
+def test_extract_tx_envelope():
+    assert _extract_tx({"data": {"transaction": "T"}}) == "T"
+
+
+def test_extract_tx_missing():
+    assert _extract_tx({"foo": "bar"}) == ""
+
+
+@pytest.mark.parametrize("key", ["receiptId", "receipt_id", "id", "offerId",
+                                 "offer_id", "listingId", "listing_id",
+                                 "orderId"])
+def test_extract_external_id_keys(key):
+    assert _extract_external_id({key: "EXT"}) == "EXT"
+
+
+@pytest.mark.parametrize("key", ["signature", "txSignature", "txid", "txId",
+                                 "transactionSignature"])
+def test_extract_signature_keys(key):
+    assert _extract_signature({key: "SIG"}) == "SIG"
+
+
+@pytest.mark.parametrize("status", ["confirmed", "finalized", "success",
+                                    "succeeded", "ok", "complete", "completed",
+                                    "CONFIRMED", "Success"])
+def test_is_confirmed_status_values(status):
+    assert _is_confirmed({"status": status})
+
+
+@pytest.mark.parametrize("flag", ["confirmed", "success", "finalized"])
+def test_is_confirmed_boolean_flags(flag):
+    assert _is_confirmed({flag: True})
+
+
+@pytest.mark.parametrize("status", ["pending", "open", "unknown", ""])
+def test_is_confirmed_false(status):
+    assert not _is_confirmed({"status": status})
+
+
+@pytest.mark.parametrize("status", ["filled", "accepted", "sold", "matched",
+                                    "FILLED"])
+def test_is_filled_status_values(status):
+    assert _is_filled({"status": status})
+
+
+@pytest.mark.parametrize("status", ["cancelled", "canceled", "withdrawn",
+                                    "expired", "rejected", "removed",
+                                    "delisted"])
+def test_is_cancelled_status_values(status):
+    assert _is_cancelled({"status": status})
+
+
+def test_is_cancelled_false_for_confirmed():
+    assert not _is_cancelled({"status": "confirmed"})
+
+
+def test_first_prefers_top_level():
+    assert _first({"a": "x", "data": {"a": "y"}}, "a") == "x"
+
+
+def test_first_falls_back_to_envelope():
+    assert _first({"data": {"a": "y"}}, "a") == "y"
+
+
+def test_first_ignores_empty_values():
+    assert _first({"a": "", "b": "v"}, "a", "b") == "v"
+
+
+def test_first_non_dict_returns_none():
+    assert _first("notadict", "a") is None
