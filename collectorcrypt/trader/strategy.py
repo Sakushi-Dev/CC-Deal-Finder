@@ -212,7 +212,11 @@ def diagnose_listings(cards: list[dict[str, Any]], sol_rate: float,
         discount = (market - ask) / market * 100.0
         resale = resell_price(market, cfg)
 
-        if discount < cfg.min_discount_pct:
+        if cfg.min_card_usd > 0 and market < cfg.min_card_usd:
+            ok, reason = False, (
+                f"value ${market:.0f} < min ${cfg.min_card_usd:.0f}"
+            )
+        elif discount < cfg.min_discount_pct:
             ok, reason = False, (
                 f"discount {discount:.1f}% < min {cfg.min_discount_pct:.0f}%"
             )
@@ -281,11 +285,18 @@ def build_plan(candidates: list[Candidate], available_volume: float,
     ordered_offers = sorted(offer_candidates if offer_candidates is not None
                             else candidates, key=lambda c: c.ask_usd)
     offer_factor = max(0.0, 1.0 - cfg.offer_discount_pct / 100.0)
+    floor = max(0.0, cfg.min_card_usd)
     taken: set[str] = set()
 
     # 1) Direct buys at the ask price.
     direct_left = direct_budget
     for cand in ordered:
+        # Value floor: skip low-value cards — valuable cards resell better and
+        # carry less liquidity risk. Measured against insured/market value, so
+        # a cheap ask on a valuable card still qualifies.
+        if cand.market_usd < floor:
+            plan.skipped += 1
+            continue
         if cand.ask_usd > cap:
             plan.skipped += 1
             continue
@@ -306,6 +317,8 @@ def build_plan(candidates: list[Candidate], available_volume: float,
     offer_left = offer_budget
     for cand in ordered_offers:
         if cand.nft in taken:
+            continue
+        if cand.market_usd < floor:
             continue
         bid = cand.ask_usd * offer_factor
         if bid <= 0 or bid > cap or bid > offer_left:

@@ -10,20 +10,22 @@ manager never bypasses that gate.
 """
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
 from collections import deque
-from pathlib import Path
 from typing import Any
 
 from .config import load_config
 from .engine import TradeEngine
+from .reconcile import Reconciler
+from .risk import RiskEngine
+from .store import OrderStore
 from .wallet import WalletError
 
-HISTORY_PATH = Path(os.environ.get("TRADER_HISTORY_PATH", "trade_history.jsonl"))
 _HISTORY_KEEP = 200
+
+# Runtime store key holding the loop control state so it survives a restart.
+_LOOP_STATE_KEY = "loop_state"
 
 
 class TraderManager:
@@ -41,7 +43,13 @@ class TraderManager:
         self._cycles = 0
         self._worker: threading.Thread | None = None
         self._history: deque[dict[str, Any]] = deque(maxlen=_HISTORY_KEEP)
+        # Durable persistence + reconciliation foundation (ETAPPE 2).
+        self._store = OrderStore()
+        self._reconciler = Reconciler(self._store)
+        # Crash-recovery summary for the operator (ETAPPE 8).
+        self._recovery: dict[str, Any] = {"performed": False}
         self._load_history()
+        self._recover()
 
     # ------------------------------------------------------------------ #
     # Controls
@@ -77,9 +85,11 @@ class TraderManager:
             self._interval = max(15.0, float(interval or 300.0))
             if self._loop_active:
                 self._paused = False
+                self._persist_loop_state()
                 return
             self._loop_active = True
             self._paused = False
+            self._persist_loop_state()
             self._worker = threading.Thread(target=self._loop, daemon=True)
             self._worker.start()
 
@@ -87,16 +97,89 @@ class TraderManager:
         with self._lock:
             if self._loop_active:
                 self._paused = True
+                self._persist_loop_state()
 
     def resume(self) -> None:
         with self._lock:
             if self._loop_active:
                 self._paused = False
+                self._persist_loop_state()
 
     def stop(self) -> None:
         with self._lock:
             self._loop_active = False
             self._paused = False
+            self._persist_loop_state()
+
+    # ------------------------------------------------------------------ #
+    # Persistence / recovery (ETAPPE 8)
+    # ------------------------------------------------------------------ #
+    def _persist_loop_state(self) -> None:
+        """Write the current loop control state to the durable store.
+
+        Called while holding ``self._lock``. A persistence failure must never
+        break the live control flow, so errors are swallowed (the in-memory
+        state stays authoritative for the running process).
+        """
+        try:
+            self._store.set_runtime(_LOOP_STATE_KEY, {
+                "loop_active": self._loop_active,
+                "paused": self._paused,
+                "interval": self._interval,
+            })
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            pass
+
+    def _recover(self) -> None:
+        """Restore loop state after a restart and reconcile in-flight orders.
+
+        Two independent, fail-safe steps:
+
+        * **Startup reconcile** — a single read-only reconciliation so the UI
+          immediately reflects any orders that were in flight when the process
+          stopped. This never submits, signs or cancels anything.
+        * **Opt-in auto-resume** — only when ``TRADER_AUTO_RESUME`` is set *and*
+          the loop was active before the restart is the worker restarted, in
+          exactly the mode that is configured now. The live/auth gates are
+          unchanged, so a crash can never silently arm live trading.
+        """
+        summary: dict[str, Any] = {"performed": True, "auto_resume": False,
+                                   "resumed": False, "in_flight": 0,
+                                   "was_active": False}
+        # 1) Read-only reconcile of any orders left in flight.
+        try:
+            recon = self._reconciler.reconcile().to_dict()
+            summary["in_flight"] = int(recon.get("active", 0) or 0)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            summary["reconcile_error"] = str(exc)
+
+        # 2) Read persisted loop state.
+        try:
+            saved = self._store.get_runtime(_LOOP_STATE_KEY) or {}
+        except Exception:  # noqa: BLE001
+            saved = {}
+        was_active = bool(saved.get("loop_active"))
+        summary["was_active"] = was_active
+
+        # 3) Opt-in resume (env-only flag, like the live switch).
+        try:
+            auto_resume = load_config().auto_resume
+        except Exception:  # noqa: BLE001 - default to the safe choice
+            auto_resume = False
+        summary["auto_resume"] = bool(auto_resume)
+
+        if auto_resume and was_active:
+            interval = float(saved.get("interval") or 300.0)
+            paused = bool(saved.get("paused"))
+            with self._lock:
+                self._interval = max(15.0, interval)
+                self._loop_active = True
+                self._paused = paused
+                self._worker = threading.Thread(target=self._loop, daemon=True)
+                self._worker.start()
+            summary["resumed"] = True
+
+        self._recovery = summary
 
     # ------------------------------------------------------------------ #
     # Workers
@@ -129,8 +212,8 @@ class TraderManager:
             self._error = None
         try:
             cfg = load_config()
-            engine = TradeEngine(cfg)
-            report = engine.run_cycle(sim_volume=sim_volume)
+            engine = TradeEngine(cfg, store=self._store)
+            report = engine.run_cycle(sim_volume=sim_volume, persist=record)
         except WalletError as exc:
             with self._lock:
                 self._error = str(exc)
@@ -152,8 +235,6 @@ class TraderManager:
             if record_entry is not None:
                 self._cycles += 1
                 self._history.append(record_entry)
-        if record_entry is not None:
-            self._append_history(record_entry)
 
     # ------------------------------------------------------------------ #
     # State
@@ -161,7 +242,7 @@ class TraderManager:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             history = list(self._history)
-            return {
+            base = {
                 "running": self._running,
                 "loop_active": self._loop_active,
                 "paused": self._paused,
@@ -172,36 +253,86 @@ class TraderManager:
                 "report": self._last_report,
                 "history": history[-50:],
                 "totals": _aggregate(history),
+                "recovery": dict(self._recovery),
             }
+        # Reconciliation reads the store (outside the state lock to avoid
+        # holding it during DB I/O). Failure here must never break the UI.
+        try:
+            base["reconciliation"] = self._reconciler.reconcile().to_dict()
+            base["order_counts"] = self._store.counts_by_status()
+        except Exception as exc:  # noqa: BLE001 - surface, never crash snapshot
+            base["reconciliation"] = {"error": str(exc)}
+            base["order_counts"] = {}
+        base["auth"] = self._auth_status()
+        base["risk"] = self._risk_status()
+        return base
+
+    def _auth_status(self) -> dict[str, Any]:
+        """Non-network summary of auth/live readiness for the operator panel.
+
+        This never performs the SIWS handshake (no network from a UI poll); it
+        only reports the configured posture so the dashboard can show whether
+        live trading is armed and why it may be blocked.
+        """
+        try:
+            cfg = load_config()
+        except Exception as exc:  # noqa: BLE001
+            return {"provider": "unknown", "live": False, "error": str(exc)}
+        provider = (cfg.auth_provider or "none").lower()
+        reasons: list[str] = []
+        if not cfg.live:
+            reasons.append("TRADER_LIVE is off")
+        if not cfg.has_secret:
+            reasons.append("no signing wallet (TRADER_WALLET_SECRET)")
+        if provider == "none":
+            reasons.append("no auth provider (TRADER_AUTH_PROVIDER=none)")
+        return {
+            "provider": provider,
+            "live": cfg.live,
+            "can_sign": cfg.has_secret,
+            # "armed" = configuration permits live; it does NOT assert a live
+            # session exists (that requires the network handshake at run time).
+            "armed": not reasons,
+            "blocked_reasons": reasons,
+        }
+
+    def _risk_status(self) -> dict[str, Any]:
+        """Read-only risk posture (limits + current usage) for the operator.
+
+        Computed from the durable store with no pending orders, so the panel
+        shows the configured caps, today's spend, open positions and whether
+        the kill switch would currently halt trading — even before a cycle
+        runs. Never raises; the engine itself enforces these limits live.
+        """
+        try:
+            cfg = load_config()
+            return RiskEngine(cfg, self._store).posture()
+        except Exception as exc:  # noqa: BLE001 - surface, never crash snapshot
+            return {"error": str(exc)}
 
     # ------------------------------------------------------------------ #
-    # History persistence
+    # History persistence (durable store)
     # ------------------------------------------------------------------ #
     def _load_history(self) -> None:
-        try:
-            lines = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return
-        for line in lines[-_HISTORY_KEEP:]:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                self._history.append(json.loads(line))
-            except ValueError:
-                continue
+        """Rebuild the in-memory history cache from the durable store.
 
-    def _append_history(self, record: dict[str, Any]) -> None:
+        This is what lets the dashboard show prior cycles immediately after an
+        application restart instead of starting from an empty slate.
+        """
         try:
-            with HISTORY_PATH.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
+            cycles = self._store.recent_cycles(_HISTORY_KEEP)
+        except Exception:  # noqa: BLE001 - a fresh/locked DB must not crash boot
+            return
+        for entry in cycles:
+            self._history.append(_history_record(entry))
+        self._cycles = len(self._history)
 
 
 def _history_record(report: dict[str, Any]) -> dict[str, Any]:
+    # Preserve an existing timestamp (when rebuilding from the store) so the
+    # restored history keeps the real cycle times instead of "now".
     return {
-        "ts": time.time(),
+        "ts": report.get("ts") or time.time(),
         "mode": report.get("mode"),
         "available_volume": report.get("available_volume"),
         "scanned": report.get("scanned"),
