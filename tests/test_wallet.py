@@ -145,6 +145,18 @@ def test_sign_message_varies_with_input(signer):
     assert signer.sign_message(b"a") != signer.sign_message(b"b")
 
 
+def test_sign_message_base64_is_decodable_64_bytes(signer):
+    import base64
+    sig = signer.sign_message(b"hello", encoding="base64")
+    raw = base64.b64decode(sig, validate=True)
+    assert len(raw) == 64
+
+
+def test_sign_message_rejects_unknown_encoding(signer):
+    with pytest.raises(WalletError):
+        signer.sign_message(b"hello", encoding="hex")
+
+
 def test_sign_message_requires_secret():
     w = Wallet("https://rpc.test.invalid", address="Addr1111")
     with pytest.raises(WalletError):

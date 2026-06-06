@@ -28,6 +28,13 @@ LAMPORTS_PER_SOL = 1_000_000_000
 
 DEFAULT_RPC_URL = "https://api.mainnet-beta.solana.com"
 
+# Verified public Privy app identifiers for CollectorCrypt (from the frontend
+# bundle / a captured live request, 2026-06-06). These are NOT secrets — they
+# are sent in plain request headers by every browser client. Used as defaults
+# so the SIWS provider works without extra env wiring; still overridable.
+DEFAULT_PRIVY_APP_ID = "cmdgt21w400lgky0mkn069jui"
+DEFAULT_PRIVY_CLIENT_ID = "client-WY6NvtFJDWADQMppqbxv6hSrGa1igpPo8eVK9DfhnSGTi"
+
 
 def _get_str(src: Mapping[str, str], name: str, default: str = "") -> str:
     return (src.get(name) or default).strip()
@@ -81,6 +88,7 @@ class TraderConfig:
     # Authentication (env-only; never UI-editable)
     auth_provider: str        # "none" | "static" | "privy"
     privy_app_id: str
+    privy_client_id: str
     cc_token: str
 
     # Budget / volume
@@ -164,7 +172,8 @@ def load_config() -> TraderConfig:
         wallet_secret=_get_str(os.environ, "TRADER_WALLET_SECRET"),
         live=_get_bool(os.environ, "TRADER_LIVE", False),
         auth_provider=_get_str(os.environ, "TRADER_AUTH_PROVIDER", "none").lower(),
-        privy_app_id=_get_str(os.environ, "TRADER_PRIVY_APP_ID"),
+        privy_app_id=_get_str(os.environ, "TRADER_PRIVY_APP_ID", DEFAULT_PRIVY_APP_ID),
+        privy_client_id=_get_str(os.environ, "TRADER_PRIVY_CLIENT_ID", DEFAULT_PRIVY_CLIENT_ID),
         cc_token=_get_str(os.environ, "TRADER_CC_TOKEN"),
         reserve_usdc=_get_float(src, "TRADER_RESERVE_USDC", 0.0),
         gas_reserve_sol=_get_float(src, "TRADER_GAS_RESERVE_SOL", 0.05),

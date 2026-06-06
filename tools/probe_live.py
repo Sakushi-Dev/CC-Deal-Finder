@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -163,17 +164,31 @@ class Report:
 # Probes
 # --------------------------------------------------------------------------- #
 def probe_siws(rep: Report, wallet: Wallet, app_id: str,
-               http: requests.Session) -> str:
+               http: requests.Session, base_url: str) -> str:
     """Run the SIWS handshake with step-by-step shape diagnostics.
 
     Returns the bearer token on success, or "" on failure. Only signs the login
     challenge message (moves no funds).
     """
     rep.h("SIWS handshake (api/v1/siws/init + authenticate)")
-    base = app_config.API_BASE.rstrip("/")
-    headers = {"privy-app-id": app_id} if app_id else {}
-    if not app_id:
-        rep.warn("TRADER_PRIVY_APP_ID is not set; sending init without "
+    base = base_url.rstrip("/")
+    rep.note(f"SIWS base: {base}")
+    # Privy's public API enforces CORS-style checks: it requires an Origin and
+    # identifies the SDK via privy-app-id / privy-client headers. These mirror
+    # what the browser SDK sends from collectorcrypt.com.
+    headers: dict[str, str] = {
+        "Origin": "https://collectorcrypt.com",
+        "Referer": "https://collectorcrypt.com/",
+        "privy-client": "react-auth:2.0.0",
+        "privy-client-id": "client-WY6NvtFJDWADQMppqbxv6hSrGa1igpPo8eVK9DfhnSGTi",
+        # Privy binds the init nonce to this client-analytics id; it MUST be the
+        # same value on init and authenticate.
+        "privy-ca-id": str(uuid.uuid4()),
+    }
+    if app_id:
+        headers["privy-app-id"] = app_id
+    else:
+        rep.warn("No Privy app id set; sending init without "
                  "privy-app-id header (the server may require it).")
 
     # Step 1: init -> nonce / message
@@ -216,13 +231,16 @@ def probe_siws(rep: Report, wallet: Wallet, app_id: str,
         rep.fail(f"could not sign the challenge: {exc}")
         return ""
 
-    # Step 2: authenticate -> token / expiry / account
+    # Step 2: authenticate -> token / expiry / account. Privy's SIWS
+    # authenticate body (from the SDK): message + signature + wallet metadata.
+    # The nonce lives inside the message, so it is not sent separately.
     payload = {
-        "address": wallet.address,
         "message": message,
         "signature": signature,
-        "nonce": nonce,
-        "walletClientType": "solana",
+        "walletClientType": "phantom",
+        "connectorType": "solana_adapter",
+        "message_type": "plain",
+        "mode": "login-or-sign-up",
     }
     rep.note(f"authenticate request body keys: {sorted(payload)}")
     try:
@@ -378,16 +396,24 @@ def _find_status(data: Any) -> str:
 
 
 def _local_siws_message(address: str, nonce: str) -> str:
-    issued = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Exact Privy Solana SIWS template (extracted from the CC frontend bundle):
+    #   {host} wants you to sign in with your Solana account:\n{addr}\n\n
+    #   You are proving you own {addr}.\n\nURI: {origin}\nVersion: 1\n
+    #   Chain ID: mainnet\nNonce: {nonce}\nIssued At: {iso}\nResources:\n
+    #   - https://privy.io
+    issued = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
+        f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
     return (
         "collectorcrypt.com wants you to sign in with your Solana account:\n"
         f"{address}\n\n"
-        "Sign in to CollectorCrypt\n\n"
+        f"You are proving you own {address}.\n\n"
         "URI: https://collectorcrypt.com\n"
         "Version: 1\n"
-        "Chain ID: solana:mainnet\n"
+        "Chain ID: mainnet\n"
         f"Nonce: {nonce}\n"
-        f"Issued At: {issued}"
+        f"Issued At: {issued}\n"
+        "Resources:\n"
+        "- https://privy.io"
     )
 
 
@@ -430,6 +456,12 @@ def main() -> int:
     ap.add_argument("--skip-siws", action="store_true",
                     help="Use TRADER_CC_TOKEN (static) instead of the SIWS "
                          "handshake.")
+    ap.add_argument("--siws-base", default="",
+                    help="Override the SIWS base URL (e.g. "
+                         "https://auth.privy.io). Defaults to the CC API base.")
+    ap.add_argument("--siws-app-id", default="",
+                    help="Override the Privy app id for the SIWS handshake "
+                         "(defaults to TRADER_PRIVY_APP_ID).")
     ap.add_argument("--out", default=str(OUT_PATH),
                     help="Path to write the findings report.")
     args = ap.parse_args()
@@ -465,7 +497,9 @@ def main() -> int:
         else:
             rep.fail("--skip-siws set but TRADER_CC_TOKEN is empty.")
     elif wallet is not None and wallet.can_sign:
-        token = probe_siws(rep, wallet, cfg.privy_app_id, http)
+        siws_base = args.siws_base or app_config.API_BASE
+        siws_app_id = args.siws_app_id or cfg.privy_app_id
+        token = probe_siws(rep, wallet, siws_app_id, http, siws_base)
     else:
         rep.h("Auth")
         rep.fail("No signing wallet (TRADER_WALLET_SECRET) for SIWS and "

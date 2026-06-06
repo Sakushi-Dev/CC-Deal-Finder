@@ -310,6 +310,67 @@ def test_privy_app_id_header_sent():
     assert http.calls[0]["headers"]["privy-app-id"] == "app-77"
 
 
+def test_privy_authenticate_body_verified_shape():
+    # Verified body (2026-06-06): message + base64 signature + connector fields,
+    # NO address/nonce keys, walletClientType capitalised.
+    provider, http, _ = make_privy([
+        FakeSiwsResp(200, {"nonce": "n"}),
+        FakeSiwsResp(200, {"token": "tok"}),
+    ])
+    provider.get_session()
+    auth_body = http.calls[1]["json"]
+    assert set(auth_body) == {
+        "message", "signature", "walletClientType",
+        "connectorType", "mode", "message_type",
+    }
+    assert auth_body["walletClientType"] == "Phantom"
+    assert auth_body["connectorType"] == "solana_adapter"
+    assert auth_body["mode"] == "login-or-sign-up"
+    assert auth_body["message_type"] == "plain"
+    assert "address" not in auth_body and "nonce" not in auth_body
+
+
+def test_privy_signature_is_base64_encoded():
+    provider, _, wallet = make_privy([
+        FakeSiwsResp(200, {"nonce": "n"}),
+        FakeSiwsResp(200, {"token": "tok"}),
+    ])
+    provider.get_session()
+    assert wallet.last_message_encoding == "base64"
+
+
+def test_privy_sends_origin_and_client_headers():
+    http = FakeSiwsHTTP([
+        FakeSiwsResp(200, {"nonce": "n"}),
+        FakeSiwsResp(200, {"token": "tok"}),
+    ])
+    wallet = FakeWallet(can_sign=True, address="WALLETADDR")
+    provider = PrivySiwsProvider(wallet, app_id="app-77",
+                                 client_id="client-9", http=http)
+    provider.get_session()
+    headers = http.calls[1]["headers"]
+    assert headers["Origin"] == "https://collectorcrypt.com"
+    assert headers["privy-client-id"] == "client-9"
+    assert headers["privy-ca-id"]  # a per-instance uuid
+    assert headers["privy-client"].startswith("react-auth:")
+
+
+def test_privy_message_template_matches_verified():
+    provider, _, wallet = make_privy([
+        FakeSiwsResp(200, {"nonce": "NONCE123"}),
+        FakeSiwsResp(200, {"token": "tok"}),
+    ])
+    provider.get_session()
+    msg = wallet.signed_messages[0].decode("utf-8")
+    assert msg.startswith(
+        "collectorcrypt.com wants you to sign in with your Solana account:\n"
+        "WALLETADDR\n\nYou are proving you own WALLETADDR.\n\n")
+    assert "Chain ID: mainnet\n" in msg
+    assert "Nonce: NONCE123\n" in msg
+    assert msg.endswith("Resources:\n- https://privy.io")
+
+
+
 def test_privy_uses_prebuilt_message():
     provider, _, wallet = make_privy([
         FakeSiwsResp(200, {"nonce": "n", "message": "SIGN THIS EXACT"}),

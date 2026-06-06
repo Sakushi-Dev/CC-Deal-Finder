@@ -67,19 +67,29 @@ class Wallet:
             self._keypair = self._load_keypair(self._secret)
         return self._keypair
 
-    def sign_message(self, message: bytes) -> str:
-        """Sign an arbitrary message and return the base58 signature.
+    def sign_message(self, message: bytes, *, encoding: str = "base58") -> str:
+        """Sign an arbitrary message and return the signature.
 
         Used by the Sign-In-With-Solana (SIWS) auth flow to prove wallet
         ownership to CollectorCrypt/Privy. The private key never leaves this
         process; only the resulting signature is transmitted. Requires a
         configured secret (live mode); a read-only wallet cannot sign.
+
+        ``encoding`` selects the wire format of the returned signature:
+        ``"base58"`` (default) or ``"base64"``. Privy's SIWS authenticate
+        endpoint expects the 64-byte signature **base64**-encoded (verified
+        against a live request capture, 2026-06-06).
         """
         keypair = self.keypair()
         try:
             signature = keypair.sign_message(message)
         except Exception as exc:  # noqa: BLE001 - surface signing failures clearly
             raise WalletError(f"Failed to sign message: {exc}") from exc
+        if encoding == "base64":
+            import base64
+            return base64.b64encode(bytes(signature)).decode("ascii")
+        if encoding != "base58":
+            raise WalletError(f"Unsupported signature encoding: {encoding!r}")
         return str(signature)
 
     def sign_transaction(self, serialized_tx: str) -> str:

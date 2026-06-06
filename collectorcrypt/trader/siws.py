@@ -8,21 +8,23 @@ trading client then carries.
 
 Integration boundary
 ---------------------
-The exact Privy/CC request and response shapes are **reverse-engineered and
-unverified** (see ``docs/api.md``). This module is therefore written so the
-*structure* of the flow is correct and fail-safe, while the wire details
-(endpoint paths, field names, nonce/message format, token/expiry location) are
-isolated behind small, overridable helpers and documented assumptions. Nothing
-here is wired into live spending — it only establishes a session object.
+The Privy/CC SIWS request shapes were **verified against a live request capture
+and an end-to-end handshake** (2026-06-06; see ``docs/api.md``): the wallet
+signs the challenge, Privy returns a bearer JWT, and the CollectorCrypt trading
+API accepts that JWT directly. The authenticate response field names
+(token/expiry/account) are still read defensively since only the request side
+was captured. Nothing here spends funds — it only establishes a session object.
 
-Flow (assumed)
---------------
-1. **init** — ``POST api/v1/siws/init`` with the wallet address; Privy returns a
-   ``nonce`` (and possibly a ready-made message to sign).
-2. **sign** — build the SIWS message, sign it locally with the wallet keypair
-   (the private key never leaves the process).
-3. **authenticate** — ``POST api/v1/siws/authenticate`` with the address,
-   message and signature; Privy returns a bearer ``token`` and an expiry.
+Flow (verified)
+---------------
+1. **init** — ``POST auth.privy.io/api/v1/siws/init`` with ``{address}``; Privy
+   returns a ``nonce`` (no message; the client builds it).
+2. **sign** — build the Privy Solana SIWS message and sign it locally with the
+   wallet keypair (the private key never leaves the process). The signature is
+   transmitted **base64**-encoded.
+3. **authenticate** — ``POST auth.privy.io/api/v1/siws/authenticate`` with
+   ``{message, signature, walletClientType:"Phantom", connectorType, mode,
+   message_type}``; Privy returns a bearer ``token`` and an expiry.
 
 Security & safety
 -----------------
@@ -40,6 +42,7 @@ import logging
 import secrets
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,8 +56,16 @@ from .wallet import Wallet, WalletError
 
 logger = logging.getLogger("collectorcrypt.trader.siws")
 
+# Privy SIWS runs on auth.privy.io (NOT the CollectorCrypt API host). Verified
+# against the live frontend, 2026-06-06.
+PRIVY_AUTH_BASE = "https://auth.privy.io"
+
 EP_SIWS_INIT = "api/v1/siws/init"
 EP_SIWS_AUTH = "api/v1/siws/authenticate"
+
+# Privy react-auth client version sent in the ``privy-client`` header by the
+# CollectorCrypt frontend (verified from a captured request).
+PRIVY_CLIENT_VERSION = "react-auth:3.28.0"
 
 # If the authenticate response carries no explicit expiry, assume a
 # conservative session lifetime so the provider refreshes proactively rather
@@ -66,12 +77,14 @@ class PrivySiwsProvider:
     """Establishes and refreshes a CollectorCrypt session via Privy SIWS."""
 
     def __init__(self, wallet: Wallet, *, app_id: str = "",
-                 base_url: str = app_config.API_BASE,
+                 client_id: str = "",
+                 base_url: str = PRIVY_AUTH_BASE,
                  http: requests.Session | None = None,
                  timeout: float = app_config.REQUEST_TIMEOUT,
-                 statement: str = "Sign in to CollectorCrypt",
+                 origin: str = "https://collectorcrypt.com",
                  domain: str = "collectorcrypt.com",
-                 uri: str = "https://collectorcrypt.com") -> None:
+                 uri: str = "https://collectorcrypt.com",
+                 chain_id: str = "mainnet") -> None:
         if not wallet.can_sign:
             raise CCAuthError(
                 "PrivySiwsProvider requires a signing wallet "
@@ -79,14 +92,20 @@ class PrivySiwsProvider:
             )
         self._wallet = wallet
         self._app_id = app_id
+        self._client_id = client_id
         self._base = base_url.rstrip("/")
         self._http = http or requests.Session()
         self._http.headers.setdefault("User-Agent", app_config.USER_AGENT)
         self._http.headers.setdefault("Accept", "application/json")
         self._timeout = timeout
-        self._statement = statement
+        self._origin = origin.rstrip("/")
         self._domain = domain
         self._uri = uri
+        self._chain_id = chain_id
+        # Privy binds a request to a client-assigned "ca-id" (a UUID); the
+        # browser persists one per device. We mint one per provider instance
+        # and send it on both init and authenticate so they correlate.
+        self._ca_id = str(uuid.uuid4())
         self._lock = threading.Lock()
         self._session: AuthSession | None = None
 
@@ -112,16 +131,23 @@ class PrivySiwsProvider:
         address = self._wallet.address
         nonce, message = self._init_challenge(address)
         try:
-            signature = self._wallet.sign_message(message.encode("utf-8"))
+            # Privy's authenticate endpoint expects the signature base64-encoded
+            # (verified against a live request capture, 2026-06-06).
+            signature = self._wallet.sign_message(
+                message.encode("utf-8"), encoding="base64")
         except WalletError as exc:
             raise CCAuthError(f"SIWS signing failed: {exc}") from exc
 
+        # Verified authenticate body shape (2026-06-06). Note: no address/nonce
+        # fields — the signed ``message`` carries the nonce, and the wallet type
+        # is the Privy connector name, capitalised.
         payload = {
-            "address": address,
             "message": message,
             "signature": signature,
-            "nonce": nonce,
-            "walletClientType": "solana",
+            "walletClientType": "Phantom",
+            "connectorType": "solana_adapter",
+            "mode": "login-or-sign-up",
+            "message_type": "plain",
         }
         data = self._post(EP_SIWS_AUTH, payload)
         token = _extract_token(data)
@@ -165,22 +191,25 @@ class PrivySiwsProvider:
         return nonce, self._build_siws_message(address, nonce)
 
     def _build_siws_message(self, address: str, nonce: str) -> str:
-        """Construct a SIWS (EIP-4361-style) message.
+        """Construct the Privy Solana SIWS message.
 
-        ASSUMPTION: CollectorCrypt/Privy accept the standard Sign-In-With
-        message layout. Exact required fields are unverified; this mirrors the
-        common SIWE/SIWS template.
+        VERIFIED template (2026-06-06): the exact byte-for-byte layout Privy
+        accepts for CollectorCrypt. ``Issued At`` uses millisecond precision to
+        match the browser client. The nonce comes from the init challenge.
         """
-        issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(timezone.utc)
+        issued_at = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
         return (
             f"{self._domain} wants you to sign in with your Solana account:\n"
             f"{address}\n\n"
-            f"{self._statement}\n\n"
+            f"You are proving you own {address}.\n\n"
             f"URI: {self._uri}\n"
             f"Version: 1\n"
-            f"Chain ID: solana:mainnet\n"
+            f"Chain ID: {self._chain_id}\n"
             f"Nonce: {nonce}\n"
-            f"Issued At: {issued_at}"
+            f"Issued At: {issued_at}\n"
+            f"Resources:\n"
+            f"- https://privy.io"
         )
 
     # ------------------------------------------------------------------ #
@@ -188,9 +217,20 @@ class PrivySiwsProvider:
     # ------------------------------------------------------------------ #
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base}/{path.lstrip('/')}"
-        headers: dict[str, str] = {}
+        # Header set verified against a live request (2026-06-06). Privy rejects
+        # requests without an Origin (403 missing_origin) and binds the call to
+        # the app/client identifiers and a per-device ca-id.
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Origin": self._origin,
+            "Referer": f"{self._origin}/",
+            "privy-ca-id": self._ca_id,
+            "privy-client": PRIVY_CLIENT_VERSION,
+        }
         if self._app_id:
             headers["privy-app-id"] = self._app_id
+        if self._client_id:
+            headers["privy-client-id"] = self._client_id
         logger.debug("SIWS POST %s body=%s", path, redact(body))
         try:
             resp = self._http.post(url, json=body, headers=headers,
@@ -288,7 +328,8 @@ def make_session_provider(cfg, wallet: Wallet, *,
     if provider == "static":
         return StaticTokenProvider(cfg.cc_token)
     if provider == "privy":
-        return PrivySiwsProvider(wallet, app_id=cfg.privy_app_id, http=http)
+        return PrivySiwsProvider(wallet, app_id=cfg.privy_app_id,
+                                 client_id=cfg.privy_client_id, http=http)
     return NullSessionProvider()
 
 
