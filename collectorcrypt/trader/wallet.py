@@ -67,6 +67,85 @@ class Wallet:
             self._keypair = self._load_keypair(self._secret)
         return self._keypair
 
+    def sign_message(self, message: bytes) -> str:
+        """Sign an arbitrary message and return the base58 signature.
+
+        Used by the Sign-In-With-Solana (SIWS) auth flow to prove wallet
+        ownership to CollectorCrypt/Privy. The private key never leaves this
+        process; only the resulting signature is transmitted. Requires a
+        configured secret (live mode); a read-only wallet cannot sign.
+        """
+        keypair = self.keypair()
+        try:
+            signature = keypair.sign_message(message)
+        except Exception as exc:  # noqa: BLE001 - surface signing failures clearly
+            raise WalletError(f"Failed to sign message: {exc}") from exc
+        return str(signature)
+
+    def sign_transaction(self, serialized_tx: str) -> str:
+        """Sign a serialized Solana transaction and return the signed tx.
+
+        The CollectorCrypt buy/offer/list endpoints return an *unsigned*
+        transaction that the buyer must sign locally and hand back to
+        ``marketplace/broadcast``. This decodes that transaction, applies this
+        wallet's signature over the existing message and re-encodes it.
+
+        The private key never leaves this process; only the fully signed
+        transaction bytes are returned for broadcast. Requires a configured
+        secret (live mode).
+
+        ASSUMPTION (unverified — see docs/api.md): the wire encoding is base64
+        and the payload is a *versioned* (v0) transaction whose only required
+        signer at this stage is this wallet. The decode falls back to a legacy
+        transaction layout. The exact encoding/version must be confirmed against
+        the live API on a funded test wallet before this drives real spend; the
+        method raises clearly rather than guessing if it cannot parse the input.
+        """
+        import base64
+
+        keypair = self.keypair()
+        raw = serialized_tx.strip()
+        try:
+            tx_bytes = base64.b64decode(raw, validate=True)
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            raise WalletError(
+                "Could not base64-decode the transaction payload returned by "
+                "CollectorCrypt. The wire encoding is an unverified assumption; "
+                "confirm it before enabling live trading."
+            ) from exc
+
+        signed = self._sign_tx_bytes(tx_bytes, keypair)
+        return base64.b64encode(signed).decode("ascii")
+
+    @staticmethod
+    def _sign_tx_bytes(tx_bytes: bytes, keypair: Any) -> bytes:
+        """Re-sign a serialized transaction with ``keypair``; return its bytes.
+
+        Tries the versioned (v0) layout first, then the legacy layout. Signing
+        rebuilds the transaction from its message with this keypair as signer,
+        which is correct when the wallet is the sole required signer (the usual
+        case for a marketplace buy/offer). Any failure is surfaced as a
+        :class:`WalletError` so live execution refuses rather than broadcasting
+        a malformed transaction.
+        """
+        try:
+            from solders.transaction import VersionedTransaction
+            tx = VersionedTransaction.from_bytes(tx_bytes)
+            signed = VersionedTransaction(tx.message, [keypair])
+            return bytes(signed)
+        except Exception as versioned_exc:  # noqa: BLE001 - try legacy next
+            try:
+                from solders.transaction import Transaction
+                tx = Transaction.from_bytes(tx_bytes)
+                tx.sign([keypair], tx.message.recent_blockhash)
+                return bytes(tx)
+            except Exception as legacy_exc:  # noqa: BLE001
+                raise WalletError(
+                    "Failed to sign transaction (versioned: "
+                    f"{versioned_exc}; legacy: {legacy_exc}). The transaction "
+                    "format is an unverified assumption."
+                ) from legacy_exc
+
     # ------------------------------------------------------------------ #
     # Balances
     # ------------------------------------------------------------------ #

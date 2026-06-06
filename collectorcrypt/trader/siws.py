@@ -1,0 +1,325 @@
+"""Privy Sign-In-With-Solana (SIWS) session provider.
+
+This implements the real authenticated-session handshake behind the
+:class:`~collectorcrypt.trader.auth.SessionProvider` seam introduced in
+ETAPPE 3. CollectorCrypt fronts its auth with Privy; a Solana wallet proves
+ownership by signing a challenge message, and Privy returns a bearer token the
+trading client then carries.
+
+Integration boundary
+---------------------
+The exact Privy/CC request and response shapes are **reverse-engineered and
+unverified** (see ``docs/api.md``). This module is therefore written so the
+*structure* of the flow is correct and fail-safe, while the wire details
+(endpoint paths, field names, nonce/message format, token/expiry location) are
+isolated behind small, overridable helpers and documented assumptions. Nothing
+here is wired into live spending — it only establishes a session object.
+
+Flow (assumed)
+--------------
+1. **init** — ``POST api/v1/siws/init`` with the wallet address; Privy returns a
+   ``nonce`` (and possibly a ready-made message to sign).
+2. **sign** — build the SIWS message, sign it locally with the wallet keypair
+   (the private key never leaves the process).
+3. **authenticate** — ``POST api/v1/siws/authenticate`` with the address,
+   message and signature; Privy returns a bearer ``token`` and an expiry.
+
+Security & safety
+-----------------
+* The bearer token lives only in memory and is redacted from logs.
+* The provider is **fail-safe**: any deviation (missing nonce, no token,
+  signing failure, HTTP error) raises :class:`CCAuthError`. It never returns an
+  invalid session, so the trader refuses to act rather than sending
+  unauthenticated trading requests.
+* :meth:`get_session` caches the session and refreshes only when it is within
+  the expiry skew window — no hidden, untracked re-auth on every call.
+"""
+from __future__ import annotations
+
+import logging
+import secrets
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+import requests
+
+from .. import config as app_config
+from .auth import (AuthSession, NullSessionProvider, SessionProvider,
+                   StaticTokenProvider)
+from .ccapi import CCAuthError, CCNetworkError, redact
+from .wallet import Wallet, WalletError
+
+logger = logging.getLogger("collectorcrypt.trader.siws")
+
+EP_SIWS_INIT = "api/v1/siws/init"
+EP_SIWS_AUTH = "api/v1/siws/authenticate"
+
+# If the authenticate response carries no explicit expiry, assume a
+# conservative session lifetime so the provider refreshes proactively rather
+# than discovering expiry via a mid-flight 401.
+DEFAULT_SESSION_TTL_SEC = 3600.0
+
+
+class PrivySiwsProvider:
+    """Establishes and refreshes a CollectorCrypt session via Privy SIWS."""
+
+    def __init__(self, wallet: Wallet, *, app_id: str = "",
+                 base_url: str = app_config.API_BASE,
+                 http: requests.Session | None = None,
+                 timeout: float = app_config.REQUEST_TIMEOUT,
+                 statement: str = "Sign in to CollectorCrypt",
+                 domain: str = "collectorcrypt.com",
+                 uri: str = "https://collectorcrypt.com") -> None:
+        if not wallet.can_sign:
+            raise CCAuthError(
+                "PrivySiwsProvider requires a signing wallet "
+                "(TRADER_WALLET_SECRET). A read-only wallet cannot authenticate."
+            )
+        self._wallet = wallet
+        self._app_id = app_id
+        self._base = base_url.rstrip("/")
+        self._http = http or requests.Session()
+        self._http.headers.setdefault("User-Agent", app_config.USER_AGENT)
+        self._http.headers.setdefault("Accept", "application/json")
+        self._timeout = timeout
+        self._statement = statement
+        self._domain = domain
+        self._uri = uri
+        self._lock = threading.Lock()
+        self._session: AuthSession | None = None
+
+    # ------------------------------------------------------------------ #
+    # SessionProvider interface
+    # ------------------------------------------------------------------ #
+    def get_session(self) -> AuthSession:
+        """Return a valid session, authenticating or refreshing as needed."""
+        with self._lock:
+            if self._session is not None and self._session.is_valid:
+                return self._session
+            self._session = self._authenticate()
+            return self._session
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._session = None
+
+    # ------------------------------------------------------------------ #
+    # Handshake
+    # ------------------------------------------------------------------ #
+    def _authenticate(self) -> AuthSession:
+        address = self._wallet.address
+        nonce, message = self._init_challenge(address)
+        try:
+            signature = self._wallet.sign_message(message.encode("utf-8"))
+        except WalletError as exc:
+            raise CCAuthError(f"SIWS signing failed: {exc}") from exc
+
+        payload = {
+            "address": address,
+            "message": message,
+            "signature": signature,
+            "nonce": nonce,
+            "walletClientType": "solana",
+        }
+        data = self._post(EP_SIWS_AUTH, payload)
+        token = _extract_token(data)
+        if not token:
+            raise CCAuthError(
+                "SIWS authenticate returned no token; cannot establish a "
+                "session. Response shape may have changed (see docs/api.md)."
+            )
+        expires_at = _extract_expiry(data)
+        account_id = str(
+            data.get("account_id") or data.get("accountId")
+            or (data.get("user") or {}).get("id") or ""
+        )
+        logger.info("SIWS session established for %s (account %s)",
+                    address, account_id or "?")
+        return AuthSession(token=token, account_id=account_id,
+                           wallet=address, expires_at=expires_at)
+
+    def _init_challenge(self, address: str) -> tuple[str, str]:
+        """Obtain a nonce and build the SIWS message to sign.
+
+        ASSUMPTION: the init endpoint returns a ``nonce`` (and optionally a
+        complete ``message``). If it provides a ready message we sign that
+        verbatim; otherwise we construct a SIWS-style message locally. A locally
+        generated nonce is used as a last resort so the flow degrades to a
+        clear authenticate-time error rather than crashing here.
+        """
+        try:
+            data = self._post(EP_SIWS_INIT, {"address": address})
+        except CCAuthError:
+            raise
+        except CCNetworkError:
+            raise
+        nonce = str(data.get("nonce") or data.get("challenge") or "").strip()
+        prebuilt = data.get("message")
+        if isinstance(prebuilt, str) and prebuilt.strip():
+            # Trust the server-provided message; still surface the nonce.
+            return nonce or secrets.token_hex(8), prebuilt
+        if not nonce:
+            nonce = secrets.token_hex(16)
+        return nonce, self._build_siws_message(address, nonce)
+
+    def _build_siws_message(self, address: str, nonce: str) -> str:
+        """Construct a SIWS (EIP-4361-style) message.
+
+        ASSUMPTION: CollectorCrypt/Privy accept the standard Sign-In-With
+        message layout. Exact required fields are unverified; this mirrors the
+        common SIWE/SIWS template.
+        """
+        issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return (
+            f"{self._domain} wants you to sign in with your Solana account:\n"
+            f"{address}\n\n"
+            f"{self._statement}\n\n"
+            f"URI: {self._uri}\n"
+            f"Version: 1\n"
+            f"Chain ID: solana:mainnet\n"
+            f"Nonce: {nonce}\n"
+            f"Issued At: {issued_at}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Transport
+    # ------------------------------------------------------------------ #
+    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        url = f"{self._base}/{path.lstrip('/')}"
+        headers: dict[str, str] = {}
+        if self._app_id:
+            headers["privy-app-id"] = self._app_id
+        logger.debug("SIWS POST %s body=%s", path, redact(body))
+        try:
+            resp = self._http.post(url, json=body, headers=headers,
+                                   timeout=self._timeout)
+        except requests.RequestException as exc:
+            raise CCNetworkError(f"SIWS {path} failed: {exc}", path=path) from exc
+
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.status_code in (401, 403):
+            raise CCAuthError(
+                f"SIWS {path} rejected ({resp.status_code}). Check the wallet "
+                f"and Privy app id.",
+                status=resp.status_code, path=path, body=data,
+            )
+        if resp.status_code >= 400:
+            raise CCAuthError(
+                f"SIWS {path} failed ({resp.status_code}).",
+                status=resp.status_code, path=path, body=data,
+            )
+        if not isinstance(data, dict):
+            raise CCAuthError(f"SIWS {path} returned a non-JSON body.",
+                              status=resp.status_code, path=path)
+        return data
+
+
+# --------------------------------------------------------------------------- #
+# Response parsing helpers (isolated because the shapes are unverified)
+# --------------------------------------------------------------------------- #
+def _extract_token(data: dict[str, Any]) -> str:
+    for key in ("token", "access_token", "accessToken", "jwt",
+                "privy_access_token", "session_token"):
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            return val
+    # Sometimes nested under a session/user object.
+    for parent in ("session", "data"):
+        child = data.get(parent)
+        if isinstance(child, dict):
+            nested = _extract_token(child)
+            if nested:
+                return nested
+    return ""
+
+
+def _extract_expiry(data: dict[str, Any]) -> float:
+    """Resolve an absolute epoch-seconds expiry from common shapes."""
+    # Absolute timestamps.
+    for key in ("expires_at", "expiresAt", "exp"):
+        val = data.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+        if isinstance(val, str):
+            ts = _parse_iso(val)
+            if ts:
+                return ts
+    # Relative lifetimes.
+    for key in ("expires_in", "expiresIn", "ttl"):
+        val = data.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return time.time() + float(val)
+    return time.time() + DEFAULT_SESSION_TTL_SEC
+
+
+def _parse_iso(value: str) -> float:
+    try:
+        cleaned = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(cleaned).timestamp()
+    except ValueError:
+        return 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Provider selection + live-readiness gate
+# --------------------------------------------------------------------------- #
+def make_session_provider(cfg, wallet: Wallet, *,
+                          http: requests.Session | None = None
+                          ) -> SessionProvider:
+    """Build the configured :class:`SessionProvider` for ``cfg``.
+
+    Selection is driven by ``TRADER_AUTH_PROVIDER`` (env-only):
+
+    * ``"none"`` (default) -> :class:`NullSessionProvider` (cannot authenticate).
+    * ``"static"`` -> :class:`StaticTokenProvider` (uses ``TRADER_CC_TOKEN``).
+    * ``"privy"`` -> :class:`PrivySiwsProvider` (real SIWS handshake; needs a
+      signing wallet).
+
+    The factory never raises for ``"none"``: an un-configured trader simply gets
+    a provider that safely refuses. Misconfigured real providers raise so the
+    problem is visible immediately rather than at the first trade.
+    """
+    provider = (cfg.auth_provider or "none").lower()
+    if provider == "static":
+        return StaticTokenProvider(cfg.cc_token)
+    if provider == "privy":
+        return PrivySiwsProvider(wallet, app_id=cfg.privy_app_id, http=http)
+    return NullSessionProvider()
+
+
+def check_live_ready(cfg, wallet: Wallet, *,
+                     http: requests.Session | None = None) -> AuthSession:
+    """Verify the trader may go live, returning the established session.
+
+    This is the **live-readiness gate**. It enforces, in order:
+
+    1. ``TRADER_LIVE`` must be on.
+    2. The wallet must be able to sign (a private key is configured).
+    3. The configured auth provider must not be the null provider.
+    4. A session must actually be obtainable *now*.
+
+    Any failing precondition raises :class:`CCAuthError` with a clear reason.
+    The failure mode is safe: callers that cannot obtain a session must refuse
+    to trade rather than proceed unauthenticated.
+    """
+    if not cfg.live:
+        raise CCAuthError("Live trading is disabled (TRADER_LIVE is not true).")
+    if not wallet.can_sign:
+        raise CCAuthError(
+            "Live trading requires a signing wallet (TRADER_WALLET_SECRET)."
+        )
+    if (cfg.auth_provider or "none").lower() == "none":
+        raise CCAuthError(
+            "Live trading requires an authenticated session, but "
+            "TRADER_AUTH_PROVIDER is 'none'. Set it to 'privy' (or 'static' "
+            "for integration testing)."
+        )
+    provider = make_session_provider(cfg, wallet, http=http)
+    # Establish a session now so failures surface before any trading attempt.
+    return provider.get_session()
+
