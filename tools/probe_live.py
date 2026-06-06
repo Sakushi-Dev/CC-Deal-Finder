@@ -1,556 +1,513 @@
-"""Read-only live-readiness probe for CollectorCrypt.
+"""Read-only verification of the assumed CollectorCrypt trading API shapes.
 
-Verifies the real API against our assumed request/response shapes WITHOUT
-placing any orders or spending any money. All calls are GET / read-only or
-auth-only (no marketplace writes).
+The live trader is built on a set of **reverse-engineered, unverified**
+request/response shapes (every spot marked "ASSUMED" in ``docs/api.md``):
+the SIWS handshake, ``me``, ``checkListingStatus``, the account endpoints and
+the ``marketplace/buy`` unsigned-transaction response.
 
-What this checks
-----------------
-1. SIWS handshake  — does the Privy SIWS flow work end-to-end?
-   Confirms: init endpoint + path, response nonce key, authenticate endpoint +
-   path, token key(s) in response, expiry key(s), account_id key.
+This script confirms those shapes against the **real** API **without ever
+placing an order or spending money**. It:
 
-2. me()  — does the established session return a valid profile?
-   Confirms: auth header accepted, user object shape, account id present.
+* runs the SIWS handshake and reports exactly which response keys carry the
+  nonce, the bearer token, the expiry and the account id;
+* calls ``me`` to confirm the auth header is accepted and inspect the profile
+  shape (account id location);
+* calls ``checkListingStatus`` on a real listing and prints the **status
+  vocabulary** so we can compare it to the confirmed/filled/cancelled synonyms
+  the executor matches on;
+* calls ``account/{id}/listings`` to confirm the path substitution;
+* OPTIONALLY (explicit opt-in via ``--dry-buy-nft``) calls ``marketplace/buy``
+  to inspect the **unsigned transaction** response shape. It never signs and
+  never broadcasts — nothing settles on-chain.
 
-3. checkListingStatus  — does querying a known listing return anything useful?
-   Confirms: endpoint path, query param name, status vocabulary.
-   Requires a listing id from the marketplace (passed via --listing-id or
-   discovered automatically from the first open listing).
+Nothing here signs a transaction or calls ``marketplace/broadcast``. The only
+local signing performed is ``sign_message`` for the SIWS login challenge, which
+moves no funds. Secrets, tokens and signatures are redacted from all output.
 
-4. account_listings  — do account endpoints work?
-   Confirms: endpoint path with account_id substitution, listing shape.
+Usage (PowerShell, from the repo root with the venv active)::
 
-Usage
------
-    python tools/probe_live.py [--listing-id <id>]
+    # full read-only probe (SIWS login + reads), auto-discovers a listing id:
+    & ".venv\\Scripts\\python.exe" tools/probe_live.py
 
-The script reads the same env vars the trader uses:
-    TRADER_WALLET_SECRET   — base58 keypair secret (required)
-    TRADER_WALLET_ADDRESS  — public key (required)
-    TRADER_PRIVY_APP_ID    — Privy app id (optional but recommended)
-    TRADER_CC_TOKEN        — static token to skip SIWS (optional)
-    TRADER_AUTH_PROVIDER   — 'privy' (default) or 'static'
+    # probe a specific listing's status endpoint:
+    & ".venv\\Scripts\\python.exe" tools/probe_live.py --listing-id v2_514hm3kZDf8JSkti
 
-Output
-------
-Every section prints:
-  [OK]  what was confirmed
-  [?]   something unexpected, not fatal
-  [FAIL] unexpected error or wrong shape
+    # also inspect the unsigned-buy response shape (NO sign, NO broadcast):
+    & ".venv\\Scripts\\python.exe" tools/probe_live.py --dry-buy-nft <nftAddress>
 
-A summary at the end lists which assumptions are now confirmed and what still
-needs verification. Findings are written to docs/api_probe_results.md.
+    # skip SIWS and use a pre-obtained token instead (TRADER_CC_TOKEN):
+    & ".venv\\Scripts\\python.exe" tools/probe_live.py --skip-siws
 
-Security
---------
-No private key, token or signature is ever printed. The script follows the
-same redaction rules as the trader (ccapi.redact).
+Requires ``TRADER_WALLET_SECRET`` (for SIWS) or ``TRADER_CC_TOKEN`` (with
+``--skip-siws``) in the environment / ``.env``. Writes a redacted findings
+report to ``docs/api_probe_results.md``.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-import textwrap
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# ── bootstrap the package path ─────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import requests
 
-# Load .env if present (same as the trader)
-try:
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / ".env")
-except ImportError:
-    pass
+# Make the package importable when run as a plain script.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from collectorcrypt.trader.ccapi import (
-    CCApiError, CCAuthError, CCTradingClient, redact,
+from collectorcrypt import config as app_config  # noqa: E402
+from collectorcrypt.api import CCClient  # noqa: E402
+from collectorcrypt.trader import config as trader_config  # noqa: E402
+from collectorcrypt.trader.auth import StaticTokenProvider  # noqa: E402
+from collectorcrypt.trader.ccapi import (  # noqa: E402
+    CCApiError, CCTradingClient, redact,
 )
-from collectorcrypt.trader.config import load_config
-from collectorcrypt.trader.siws import (
-    PrivySiwsProvider, _extract_token, _extract_expiry, make_session_provider,
+from collectorcrypt.trader.siws import (  # noqa: E402
+    EP_SIWS_AUTH, EP_SIWS_INIT, _extract_expiry, _extract_token,
 )
-from collectorcrypt.trader.wallet import Wallet, WalletError
-from collectorcrypt import api as cc_public_api
+from collectorcrypt.trader.wallet import Wallet, WalletError  # noqa: E402
 
-# ── colour helpers (no deps) ────────────────────────────────────────────────
-_USE_COLOR = sys.stdout.isatty()
+OUT_PATH = Path(__file__).resolve().parent.parent / "docs" / "api_probe_results.md"
 
-def _c(code: str, text: str) -> str:
-    return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
-
-OK   = lambda t: print(_c("32", "[OK]  ") + t)      # green
-WARN = lambda t: print(_c("33", "[?]   ") + t)      # yellow
-FAIL = lambda t: print(_c("31", "[FAIL]") + " " + t) # red
-INFO = lambda t: print("      " + t)
-HEAD = lambda t: print("\n" + _c("1;36", f"── {t} "))
+_SENSITIVE = ("token", "secret", "signature", "authorization", "bearer",
+              "jwt", "password", "cookie", "signedtransaction", "privatekey")
 
 
-# ── result collector ────────────────────────────────────────────────────────
-_confirmed: list[str] = []
-_warnings: list[str]  = []
-_failures: list[str]  = []
-
-def _ok(msg: str)   -> None: _confirmed.append(msg); OK(msg)
-def _warn(msg: str) -> None: _warnings.append(msg);  WARN(msg)
-def _fail(msg: str) -> None: _failures.append(msg);  FAIL(msg)
+# --------------------------------------------------------------------------- #
+# Shape description (redacted)
+# --------------------------------------------------------------------------- #
+def _is_sensitive(key: str) -> bool:
+    k = key.lower()
+    return any(s in k for s in _SENSITIVE)
 
 
-# ── helpers ─────────────────────────────────────────────────────────────────
-def _pretty(data: Any) -> str:
-    safe = redact(data)
-    return json.dumps(safe, indent=2, ensure_ascii=False)[:2000]
+def describe(value: Any, key: str = "", depth: int = 0) -> Any:
+    """Return a redacted, type-annotated description of a JSON value.
 
-
-def _get_listing_id_from_marketplace() -> str:
-    """Grab the receiptId of the first open CC listing (no auth needed)."""
-    try:
-        client = cc_public_api.CCClient()
-        page = client.fetch_marketplace_page(page=1, step=5)
-        cards = page.get("filterNFtCard") or []
-        for card in cards:
-            lst = card.get("listing") or {}
-            rid = lst.get("receiptId") or lst.get("id") or ""
-            if rid:
-                return rid
-        return ""
-    except Exception as exc:  # noqa: BLE001
-        WARN(f"Could not auto-discover a listing id: {exc}")
-        return ""
-
-
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Section 1 – SIWS handshake (raw, step-by-step for max diagnostics)
-# ═══════════════════════════════════════════════════════════════════════════ #
-def probe_siws(wallet: Wallet, cfg) -> "str | None":
-    """Run the full SIWS handshake and return the token on success."""
-    HEAD("1 / SIWS handshake")
-    import requests as _req
-    import secrets as _sec
-
-    from collectorcrypt.trader.siws import EP_SIWS_INIT, EP_SIWS_AUTH
-    from collectorcrypt import config as app_cfg
-
-    base = app_cfg.API_BASE.rstrip("/")
-    http = _req.Session()
-    http.headers["User-Agent"] = app_cfg.USER_AGENT
-    http.headers["Accept"] = "application/json"
-    headers: dict[str, str] = {}
-    if cfg.privy_app_id:
-        headers["privy-app-id"] = cfg.privy_app_id
-        INFO(f"Using privy-app-id: {cfg.privy_app_id[:8]}…")
-
-    address = wallet.address
-    INFO(f"Wallet address: {address}")
-
-    # Step 1a – init
-    INFO(f"POST {base}/{EP_SIWS_INIT}")
-    try:
-        r = http.post(f"{base}/{EP_SIWS_INIT}",
-                      json={"address": address},
-                      headers=headers, timeout=15)
-        INFO(f"Status: {r.status_code}")
-        try:
-            init_data = r.json()
-        except ValueError:
-            init_data = {}
-            _fail(f"init returned non-JSON (status {r.status_code}): {r.text[:300]}")
-            return None
-        INFO(f"Response keys: {list(init_data.keys())}")
-        if r.status_code >= 400:
-            _fail(f"init failed ({r.status_code}): {_pretty(init_data)}")
-            return None
-    except Exception as exc:  # noqa: BLE001
-        _fail(f"init network error: {exc}")
+    Key names and types are preserved so we can verify field names; sensitive
+    values are masked. Short strings (e.g. a status word) are shown verbatim
+    because the status vocabulary is exactly what we need to confirm.
+    """
+    if key and _is_sensitive(key):
+        return "<redacted>"
+    if isinstance(value, dict):
+        if depth >= 4:
+            return f"<dict {len(value)} keys>"
+        return {k: describe(v, k, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return []
+        return [describe(value[0], key, depth + 1), f"... ({len(value)} items)"]
+    if isinstance(value, str):
+        if len(value) <= 48:
+            return value
+        return f"<str len={len(value)}>"
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if value is None:
         return None
+    return f"<{type(value).__name__}>"
 
-    nonce = str(init_data.get("nonce") or init_data.get("challenge") or "").strip()
-    prebuilt_msg = init_data.get("message")
 
-    if nonce:
-        _ok(f"init → nonce key present ('{list(k for k in init_data if 'nonce' in k.lower() or 'challenge' in k.lower())}')")
-    else:
-        _warn("init → no 'nonce'/'challenge' key in response — using random fallback")
-        nonce = _sec.token_hex(16)
+# --------------------------------------------------------------------------- #
+# Report accumulation
+# --------------------------------------------------------------------------- #
+class Report:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
 
-    if isinstance(prebuilt_msg, str) and prebuilt_msg.strip():
-        _ok("init → server supplied a ready-made message to sign")
-        message = prebuilt_msg
-    else:
-        _warn("init → no ready-made 'message' — building SIWS message locally (assumed format)")
-        issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        message = (
-            f"collectorcrypt.com wants you to sign in with your Solana account:\n"
-            f"{address}\n\n"
-            f"Sign in to CollectorCrypt\n\n"
-            f"URI: https://collectorcrypt.com\n"
-            f"Version: 1\n"
-            f"Chain ID: solana:mainnet\n"
-            f"Nonce: {nonce}\n"
-            f"Issued At: {issued_at}"
+    def h(self, text: str) -> None:
+        self.lines.append(f"\n## {text}\n")
+        print(f"\n=== {text} ===")
+
+    def ok(self, text: str) -> None:
+        self.lines.append(f"- ✅ {text}")
+        print(f"  [OK]   {text}")
+
+    def warn(self, text: str) -> None:
+        self.lines.append(f"- ⚠️ {text}")
+        print(f"  [WARN] {text}")
+
+    def fail(self, text: str) -> None:
+        self.lines.append(f"- ❌ {text}")
+        print(f"  [FAIL] {text}")
+
+    def note(self, text: str) -> None:
+        self.lines.append(f"- {text}")
+        print(f"         {text}")
+
+    def block(self, label: str, value: Any) -> None:
+        import json
+        rendered = json.dumps(describe(value), indent=2, default=str)
+        self.lines.append(f"\n**{label}**\n\n```jsonc\n{rendered}\n```")
+        print(f"  {label}:")
+        for line in rendered.splitlines():
+            print(f"      {line}")
+
+    def write(self, path: Path) -> None:
+        header = (
+            "# Live API probe results\n\n"
+            f"> Generated by `tools/probe_live.py` on "
+            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.\n"
+            "> Read-only: no orders were placed and nothing was broadcast.\n"
+            "> Secrets, tokens and signatures are redacted.\n"
         )
+        path.write_text(header + "\n".join(self.lines) + "\n", encoding="utf-8")
+        print(f"\nReport written to {path}")
 
-    # Step 1b – sign message locally
+
+# --------------------------------------------------------------------------- #
+# Probes
+# --------------------------------------------------------------------------- #
+def probe_siws(rep: Report, wallet: Wallet, app_id: str,
+               http: requests.Session) -> str:
+    """Run the SIWS handshake with step-by-step shape diagnostics.
+
+    Returns the bearer token on success, or "" on failure. Only signs the login
+    challenge message (moves no funds).
+    """
+    rep.h("SIWS handshake (api/v1/siws/init + authenticate)")
+    base = app_config.API_BASE.rstrip("/")
+    headers = {"privy-app-id": app_id} if app_id else {}
+    if not app_id:
+        rep.warn("TRADER_PRIVY_APP_ID is not set; sending init without "
+                 "privy-app-id header (the server may require it).")
+
+    # Step 1: init -> nonce / message
+    try:
+        r = http.post(f"{base}/{EP_SIWS_INIT}", json={"address": wallet.address},
+                      headers=headers, timeout=app_config.REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        rep.fail(f"init request failed (network): {exc}")
+        return ""
+    rep.note(f"init HTTP {r.status_code} at {EP_SIWS_INIT}")
+    init = _json(r)
+    if not isinstance(init, dict):
+        rep.fail(f"init returned non-JSON / unexpected body (HTTP {r.status_code}). "
+                 "The endpoint path or method may be wrong.")
+        rep.block("init raw (redacted)", init)
+        return ""
+    rep.block("init response shape", init)
+    nonce_key = _first_present(init, ("nonce", "challenge"))
+    msg_key = _first_present(init, ("message",))
+    if nonce_key:
+        rep.ok(f"nonce found under key '{nonce_key}'")
+    else:
+        rep.warn("no 'nonce'/'challenge' key in init response — verify the "
+                 "real nonce field name.")
+    if msg_key:
+        rep.ok(f"server provided a ready-to-sign 'message' (key '{msg_key}')")
+    else:
+        rep.note("no server 'message'; the client builds the SIWS message "
+                 "locally (verify CC accepts that format).")
+
+    # Build the message exactly like the provider would, then sign it.
+    nonce = str(init.get("nonce") or init.get("challenge") or "").strip()
+    message = init.get("message")
+    if not (isinstance(message, str) and message.strip()):
+        message = _local_siws_message(wallet.address, nonce or "probe-nonce")
     try:
         signature = wallet.sign_message(message.encode("utf-8"))
-        _ok("wallet.sign_message succeeded (signature NOT printed)")
+        rep.ok("signed the login challenge locally (no funds moved).")
     except WalletError as exc:
-        _fail(f"wallet.sign_message failed: {exc}")
-        return None
+        rep.fail(f"could not sign the challenge: {exc}")
+        return ""
 
-    # Step 1c – authenticate
-    auth_payload = {
-        "address": address,
+    # Step 2: authenticate -> token / expiry / account
+    payload = {
+        "address": wallet.address,
         "message": message,
         "signature": signature,
         "nonce": nonce,
         "walletClientType": "solana",
     }
-    INFO(f"POST {base}/{EP_SIWS_AUTH}")
-    INFO(f"Payload keys: {list(auth_payload.keys())} (signature+message redacted)")
+    rep.note(f"authenticate request body keys: {sorted(payload)}")
     try:
-        r2 = http.post(f"{base}/{EP_SIWS_AUTH}",
-                       json=auth_payload, headers=headers, timeout=15)
-        INFO(f"Status: {r2.status_code}")
-        try:
-            auth_data = r2.json()
-        except ValueError:
-            auth_data = {}
-            _fail(f"authenticate returned non-JSON (status {r2.status_code}): {r2.text[:300]}")
-            return None
-        INFO(f"Response top-level keys: {list(auth_data.keys())}")
-        if r2.status_code >= 400:
-            _fail(f"authenticate failed ({r2.status_code}): {_pretty(auth_data)}")
-            return None
-    except Exception as exc:  # noqa: BLE001
-        _fail(f"authenticate network error: {exc}")
-        return None
+        r = http.post(f"{base}/{EP_SIWS_AUTH}", json=payload, headers=headers,
+                      timeout=app_config.REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        rep.fail(f"authenticate request failed (network): {exc}")
+        return ""
+    rep.note(f"authenticate HTTP {r.status_code} at {EP_SIWS_AUTH}")
+    auth = _json(r)
+    if not isinstance(auth, dict):
+        rep.fail("authenticate returned non-JSON / unexpected body. "
+                 "Verify the path, headers and request body fields.")
+        rep.block("authenticate raw (redacted)", auth)
+        return ""
+    rep.block("authenticate response shape", auth)
 
-    # Inspect token location
-    token = _extract_token(auth_data)
+    token = _extract_token(auth)
     if token:
-        for key in ("token", "access_token", "accessToken", "jwt",
-                    "privy_access_token", "session_token"):
-            if auth_data.get(key):
-                _ok(f"authenticate → token found at top-level key '{key}'")
-                break
-        else:
-            for parent in ("session", "data"):
-                child = auth_data.get(parent)
-                if isinstance(child, dict) and _extract_token(child):
-                    _ok(f"authenticate → token nested under '{parent}'")
-                    break
+        rep.ok("bearer token extracted (our _extract_token keys matched).")
     else:
-        _fail("authenticate → NO token found in response (check docs/api.md assumed keys)")
-        INFO(f"Full response (redacted): {_pretty(auth_data)}")
-        return None
-
-    # Inspect expiry location
-    for key in ("expires_at", "expiresAt", "exp", "expires_in", "expiresIn", "ttl"):
-        if auth_data.get(key) is not None:
-            _ok(f"authenticate → expiry found at key '{key}' = {auth_data[key]!r}")
-            break
+        rep.fail("no token found by _extract_token — the token field name is "
+                 "different from all assumed keys. Inspect the shape above.")
+    expiry = _extract_expiry(auth)
+    rep.note(f"expiry resolved to epoch {expiry:.0f} "
+             f"({datetime.fromtimestamp(expiry, timezone.utc):%Y-%m-%d %H:%M UTC}); "
+             "if this is exactly +1h it likely fell back to the default TTL.")
+    acct = str(auth.get("account_id") or auth.get("accountId")
+               or (auth.get("user") or {}).get("id") or "")
+    if acct:
+        rep.ok(f"account id found (len={len(acct)}).")
     else:
-        _warn("authenticate → no expiry key found; will use 1h default TTL")
-
-    # Inspect account_id location
-    account_id = (
-        str(auth_data.get("account_id") or auth_data.get("accountId") or
-            (auth_data.get("user") or {}).get("id") or "")
-    )
-    if account_id:
-        _ok(f"authenticate → account_id = {account_id}")
-    else:
-        _warn("authenticate → no account_id in response (will be empty string)")
-
-    _ok("SIWS handshake complete")
+        rep.warn("no account id in the authenticate response — account-scoped "
+                 "reads (account/{id}/listings) will need another source.")
     return token
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Section 2 – me() via CCTradingClient
-# ═══════════════════════════════════════════════════════════════════════════ #
-def probe_me(client: CCTradingClient) -> "str":
-    """Call me() and return the account id."""
-    HEAD("2 / api/v1/users/me")
+def probe_me(rep: Report, client: CCTradingClient) -> str:
+    """Confirm the auth header is accepted and return the account id if present."""
+    rep.h("me (api/v1/users/me)")
     try:
         data = client.me()
-        INFO(f"Response keys: {list(data.keys())}")
-        acct_id = str(data.get("id") or data.get("account_id") or
-                      data.get("accountId") or "")
-        if acct_id:
-            _ok(f"me() → account id = {acct_id}")
-        else:
-            _warn(f"me() → no 'id'/'account_id' key; keys = {list(data.keys())}")
-        wallet_field = data.get("wallet") or data.get("wallets") or data.get("address")
-        if wallet_field:
-            _ok(f"me() → wallet field present (key confirmed)")
-        return acct_id
-    except CCAuthError as exc:
-        _fail(f"me() auth error: {exc}")
     except CCApiError as exc:
-        _fail(f"me() api error ({exc.status}): {exc}")
-    return ""
+        rep.fail(f"me() failed: {type(exc).__name__}: {exc}")
+        return ""
+    rep.ok("auth header accepted (HTTP 2xx).")
+    rep.block("me response shape", data)
+    acct = str(data.get("id") or data.get("account_id")
+               or (data.get("user") or {}).get("id") or "")
+    if acct:
+        rep.ok(f"account id resolved from me() (len={len(acct)}).")
+    else:
+        rep.warn("could not locate an account id field in me().")
+    return acct
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Section 3 – checkListingStatus
-# ═══════════════════════════════════════════════════════════════════════════ #
-def probe_check_listing_status(client: CCTradingClient, listing_id: str) -> None:
-    HEAD("3 / checkListingStatus")
+def probe_listing_status(rep: Report, client: CCTradingClient,
+                         listing_id: str) -> None:
+    rep.h("checkListingStatus")
     if not listing_id:
-        _warn("No listing id available — skipping checkListingStatus probe")
-        INFO("Pass --listing-id <receiptId> to test this endpoint")
+        rep.warn("no listing id available to probe (pass --listing-id or let "
+                 "auto-discovery find one).")
         return
-    INFO(f"Checking listing id: {listing_id}")
+    rep.note(f"probing listing id: {listing_id}")
     try:
         data = client.check_listing_status(listing_id)
-        INFO(f"Response keys: {list(data.keys())}")
-        INFO(f"Response (redacted): {_pretty(data)}")
-
-        # Look for a status field
-        status_val = (data.get("status") or data.get("listingStatus") or
-                      data.get("state") or "")
-        if status_val:
-            _ok(f"checkListingStatus → status field = '{status_val}'")
-            # Check against our assumed vocabulary
-            assumed_ok = {"confirmed", "filled", "cancelled", "canceled",
-                          "withdrawn", "expired", "listed", "pending",
-                          "open", "accepted", "rejected", "removed", "delisted"}
-            if str(status_val).lower() in assumed_ok:
-                _ok(f"status value '{status_val}' is in assumed vocabulary")
-            else:
-                _warn(f"status value '{status_val}' is NOT in assumed vocabulary — update executor.py helpers")
-        else:
-            _warn(f"checkListingStatus → no 'status' key; keys = {list(data.keys())}")
-            INFO("This may mean the response wraps the status differently")
-
     except CCApiError as exc:
-        _fail(f"checkListingStatus failed ({exc.status}): {exc}")
-        INFO("If this is a 400/404, the listing id or endpoint path may be wrong")
+        rep.fail(f"check_listing_status failed: {type(exc).__name__}: {exc}")
+        return
+    rep.ok("checkListingStatus accepted the 'id' query param (HTTP 2xx).")
+    rep.block("checkListingStatus response shape", data)
+    status = _find_status(data)
+    if status:
+        rep.ok(f"status value observed: '{status}' — compare against the "
+               "confirmed/filled/cancelled synonyms in executor.py.")
+    else:
+        rep.warn("no obvious status field found; inspect the shape above to "
+                 "confirm where the on-chain status is reported.")
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Section 4 – account_listings
-# ═══════════════════════════════════════════════════════════════════════════ #
-def probe_account_listings(client: CCTradingClient, account_id: str) -> None:
-    HEAD("4 / account/{id}/listings")
+def probe_account_listings(rep: Report, client: CCTradingClient,
+                           account_id: str) -> None:
+    rep.h("account/{id}/listings")
     if not account_id:
-        _warn("No account id — skipping account_listings probe")
+        rep.warn("no account id resolved; skipping account_listings probe.")
         return
     try:
         data = client.account_listings(account_id)
-        INFO(f"Response type: {type(data).__name__}  keys: {list(data.keys()) if isinstance(data, dict) else 'list'}")
-        INFO(f"Response (redacted): {_pretty(data)}")
-        _ok("account_listings → endpoint reachable, shape logged above")
     except CCApiError as exc:
-        _fail(f"account_listings failed ({exc.status}): {exc}")
+        rep.fail(f"account_listings failed: {type(exc).__name__}: {exc}")
+        return
+    rep.ok("account/{id}/listings path accepted (HTTP 2xx).")
+    rep.block("account_listings response shape", data)
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Section 5 – Dry-run: inspect buy prepare response shape (NO spend)
-#              Only runs if --dry-buy-nft is given explicitly.
-# ═══════════════════════════════════════════════════════════════════════════ #
-def probe_buy_shape(client: CCTradingClient, nft: str,
-                    price: float, receipt_id: str) -> None:
-    HEAD("5 / marketplace/buy  [DRY PROBE — response shape only]")
-    INFO("NOTE: this call INITIATES a buy prepare request.")
-    INFO("The returned unsigned tx is inspected but NEVER signed or broadcast.")
-    INFO(f"NFT: {nft}  price: {price} USDC  receiptId: {receipt_id}")
+def probe_dry_buy(rep: Report, client: CCTradingClient, nft: str,
+                  price: float, receipt_id: str) -> None:
+    """Inspect the unsigned-tx response of marketplace/buy. NEVER signs/broadcasts."""
+    rep.h("marketplace/buy — UNSIGNED tx shape (DRY: no sign, no broadcast)")
+    rep.warn("This calls marketplace/buy to inspect the returned UNSIGNED "
+             "transaction. It does NOT sign and does NOT broadcast, so nothing "
+             "settles on-chain. Abort now (Ctrl+C) if that is not intended.")
     try:
         data = client.initiate_buy(nft=nft, price=price, receipt_id=receipt_id)
-        INFO(f"Response keys: {list(data.keys())}")
-        INFO(f"Response (redacted): {_pretty(data)}")
-
-        # Check for a transaction field
-        tx_val = (data.get("transaction") or data.get("tx") or
-                  data.get("serializedTransaction") or data.get("rawTransaction") or
-                  data.get("unsignedTransaction") or "")
-        if tx_val:
-            _ok(f"marketplace/buy → unsigned tx field found (key confirmed)")
-            # Check it looks like base64
-            import base64
-            try:
-                raw = base64.b64decode(tx_val)
-                _ok(f"tx value decodes as base64 ({len(raw)} bytes)")
-            except Exception:  # noqa: BLE001
-                _warn("tx value is NOT base64-decodable — may be base58 or hex")
-        else:
-            _warn(f"marketplace/buy → no tx field found; keys = {list(data.keys())}")
-
-        # Check for receipt/offer/listing id
-        for key in ("receiptId", "id", "offerId", "listingId", "orderId"):
-            if data.get(key):
-                _ok(f"marketplace/buy → id field '{key}' = {data[key]!r}")
-                break
-        else:
-            _warn("marketplace/buy → no id field found in response")
-
     except CCApiError as exc:
-        _fail(f"marketplace/buy failed ({exc.status}): {exc}")
-        if exc.body:
-            INFO(f"Error body: {_pretty(exc.body)}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Summary + write findings to docs/
-# ═══════════════════════════════════════════════════════════════════════════ #
-def write_results(args: argparse.Namespace) -> None:
-    HEAD("Summary")
-    print(f"  Confirmed : {len(_confirmed)}")
-    print(f"  Warnings  : {len(_warnings)}")
-    print(f"  Failures  : {len(_failures)}")
-
-    lines = [
-        f"# probe_live.py results — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-        "",
-        f"Run args: {vars(args)}",
-        "",
-        "## Confirmed",
-        *[f"- {c}" for c in _confirmed],
-        "",
-        "## Warnings (check manually)",
-        *[f"- {w}" for w in _warnings],
-        "",
-        "## Failures",
-        *[f"- {f}" for f in _failures],
-        "",
-        "## What to update in docs/api.md",
-    ]
-    if not _failures and not _warnings:
-        lines.append("- All assumptions confirmed. Mark trading-flow shapes as VERIFIED.")
+        rep.fail(f"initiate_buy failed: {type(exc).__name__}: {exc}")
+        rep.note("A 4xx here often means the request body field names are wrong "
+                 "(verify nftAddress/price/currency/receiptId against DevTools).")
+        return
+    rep.ok("marketplace/buy returned 2xx.")
+    rep.block("initiate_buy response shape", data)
+    tx_key = _first_present(
+        data, ("transaction", "tx", "serializedTransaction", "unsignedTransaction",
+               "txn", "data"))
+    if tx_key:
+        rep.ok(f"unsigned transaction found under key '{tx_key}'.")
     else:
-        if _failures:
-            lines.append("- Fix failures before enabling live trading.")
-        if _warnings:
-            lines.append("- Review warnings; update assumed key names in ccapi.py / executor.py as needed.")
-
-    out_path = ROOT / "docs" / "api_probe_results.md"
-    out_path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\n  Results written to {out_path.relative_to(ROOT)}")
-
-    if _failures:
-        print(_c("31", "\n  ✗ PROBE FAILED — do NOT enable live trading yet"))
-        sys.exit(1)
-    elif _warnings:
-        print(_c("33", "\n  ⚠  Probe passed with warnings — review before live trading"))
-    else:
-        print(_c("32", "\n  ✓ All checks passed"))
+        rep.warn("no transaction field matched the assumed keys — inspect the "
+                 "shape above to confirm where the unsigned tx is returned.")
+    rep.note("NOT signing and NOT broadcasting — probe ends here by design.")
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Entry point
-# ═══════════════════════════════════════════════════════════════════════════ #
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=textwrap.dedent("""\
-            Read-only live-readiness probe for CollectorCrypt.
-            Verifies API shapes WITHOUT spending any money.
-        """),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument(
-        "--listing-id", default="",
-        help="receiptId of a known open listing to probe checkListingStatus. "
-             "Auto-discovered from the public marketplace if omitted.",
-    )
-    p.add_argument(
-        "--dry-buy-nft", default="",
-        help="NFT address to probe the marketplace/buy prepare endpoint. "
-             "Only inspects the response — NEVER signs or broadcasts. "
-             "Requires --dry-buy-price and --dry-buy-receipt.",
-    )
-    p.add_argument("--dry-buy-price", type=float, default=0.0,
-                   help="Price in USDC for the dry buy probe.")
-    p.add_argument("--dry-buy-receipt", default="",
-                   help="receiptId for the dry buy probe.")
-    p.add_argument(
-        "--skip-siws", action="store_true",
-        help="Skip the SIWS section and use TRADER_CC_TOKEN (static) instead.",
-    )
-    return p.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-
-    # ── load config + wallet ────────────────────────────────────────────────
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+def _json(resp: requests.Response) -> Any:
     try:
-        cfg = load_config()
-    except Exception as exc:  # noqa: BLE001
-        FAIL(f"load_config() failed: {exc}")
-        sys.exit(1)
+        return resp.json()
+    except ValueError:
+        return {"<non-json-body>": resp.text[:200]}
 
-    secret = os.environ.get("TRADER_WALLET_SECRET", "")
-    address = os.environ.get("TRADER_WALLET_ADDRESS", cfg.wallet_address or "")
-    if not secret or not address:
-        FAIL("TRADER_WALLET_SECRET and TRADER_WALLET_ADDRESS must be set.")
-        INFO("These are env-only (never in trader_settings.json).")
-        sys.exit(1)
 
+def _first_present(data: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for k in keys:
+        if k in data and data[k] not in (None, "", [], {}):
+            return k
+    return ""
+
+
+def _find_status(data: Any) -> str:
+    if isinstance(data, dict):
+        for key in ("status", "state", "listingStatus", "onChainStatus"):
+            val = data.get(key)
+            if isinstance(val, str) and val:
+                return val
+        for parent in ("data", "result", "listing"):
+            child = data.get(parent)
+            if isinstance(child, dict):
+                nested = _find_status(child)
+                if nested:
+                    return nested
+    return ""
+
+
+def _local_siws_message(address: str, nonce: str) -> str:
+    issued = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        "collectorcrypt.com wants you to sign in with your Solana account:\n"
+        f"{address}\n\n"
+        "Sign in to CollectorCrypt\n\n"
+        "URI: https://collectorcrypt.com\n"
+        "Version: 1\n"
+        "Chain ID: solana:mainnet\n"
+        f"Nonce: {nonce}\n"
+        f"Issued At: {issued}"
+    )
+
+
+def _discover_listing_id(rep: Report) -> tuple[str, str, float]:
+    """Find a real (receiptId, nftAddress, price) from the public marketplace."""
     try:
-        wallet = Wallet(address=address, secret=secret)
-    except WalletError as exc:
-        FAIL(f"Wallet init failed: {exc}")
-        sys.exit(1)
+        page = CCClient().fetch_marketplace_page(1, 30)
+    except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+        rep.warn(f"could not auto-discover a listing: {exc}")
+        return "", "", 0.0
+    for card in page.get("filterNFtCard", []) or []:
+        listing = card.get("listing") or {}
+        receipt = str(listing.get("receiptId") or "")
+        nft = str(card.get("nftAddress") or "")
+        price = float(listing.get("price") or 0.0)
+        if receipt and nft:
+            rep.note(f"auto-discovered listing receiptId for status probe "
+                     f"(nft len={len(nft)}, price={price}).")
+            return receipt, nft, price
+    rep.warn("no usable listing found on marketplace page 1.")
+    return "", "", 0.0
 
-    # ── section 1: SIWS (or skip if --skip-siws / static token) ────────────
-    token: str | None = None
-    if args.skip_siws or cfg.auth_provider == "static":
-        HEAD("1 / SIWS handshake  [SKIPPED — using static token]")
-        token = cfg.cc_token or os.environ.get("TRADER_CC_TOKEN", "")
-        if token:
-            _ok("Static token loaded (not printed)")
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--listing-id", default="",
+                    help="receiptId to probe checkListingStatus (auto-discovered "
+                         "if omitted).")
+    ap.add_argument("--dry-buy-nft", default="",
+                    help="NFT address to inspect the marketplace/buy UNSIGNED "
+                         "tx shape (explicit opt-in; never signs/broadcasts).")
+    ap.add_argument("--dry-buy-price", type=float, default=0.0,
+                    help="Price for the dry-buy probe (defaults to the listing "
+                         "price when the nft is auto-discovered).")
+    ap.add_argument("--dry-buy-receipt", default="",
+                    help="receiptId for the dry-buy probe.")
+    ap.add_argument("--skip-siws", action="store_true",
+                    help="Use TRADER_CC_TOKEN (static) instead of the SIWS "
+                         "handshake.")
+    ap.add_argument("--out", default=str(OUT_PATH),
+                    help="Path to write the findings report.")
+    args = ap.parse_args()
+
+    rep = Report()
+    rep.h("Environment")
+    cfg = trader_config.load_config()
+    rep.note(f"API base: {app_config.API_BASE}")
+    rep.note(f"auth_provider: {cfg.auth_provider!r}  live: {cfg.live}")
+    rep.note(f"wallet configured: {bool(cfg.wallet_address or cfg.wallet_secret)} "
+             f"(can_sign: {bool(cfg.wallet_secret)})")
+
+    http = requests.Session()
+    http.headers["User-Agent"] = app_config.USER_AGENT
+    http.headers["Accept"] = "application/json"
+
+    # Build the wallet (needed for SIWS signing).
+    wallet: Wallet | None = None
+    if cfg.wallet_address or cfg.wallet_secret:
+        try:
+            wallet = Wallet(cfg.rpc_url, address=cfg.wallet_address,
+                            secret=cfg.wallet_secret)
+        except WalletError as exc:
+            rep.fail(f"wallet construction failed: {exc}")
+
+    # Establish a session token.
+    token = ""
+    if args.skip_siws:
+        rep.h("Auth via static token (TRADER_CC_TOKEN)")
+        if cfg.cc_token:
+            token = cfg.cc_token
+            rep.ok("using TRADER_CC_TOKEN (skipping SIWS handshake).")
         else:
-            _fail("--skip-siws set but TRADER_CC_TOKEN is empty")
+            rep.fail("--skip-siws set but TRADER_CC_TOKEN is empty.")
+    elif wallet is not None and wallet.can_sign:
+        token = probe_siws(rep, wallet, cfg.privy_app_id, http)
     else:
-        token = probe_siws(wallet, cfg)
+        rep.h("Auth")
+        rep.fail("No signing wallet (TRADER_WALLET_SECRET) for SIWS and "
+                 "--skip-siws not set. Cannot establish a session.")
 
     if not token:
-        _fail("No auth token — cannot continue with authenticated probes")
-        write_results(args)
-        return
+        rep.warn("No session token — skipping authenticated read probes.")
+        rep.write(Path(args.out))
+        return 1
 
-    # ── build a trading client using the confirmed token ────────────────────
-    from collectorcrypt.trader.auth import StaticTokenProvider
-    client = CCTradingClient(session_provider=StaticTokenProvider(token))
+    # Authenticated client using the obtained token.
+    client = CCTradingClient(
+        session_provider=StaticTokenProvider(token), http=http)
 
-    # ── section 2: me() ─────────────────────────────────────────────────────
-    account_id = probe_me(client)
+    account_id = probe_me(rep, client)
 
-    # ── section 3: checkListingStatus ───────────────────────────────────────
+    # Listing status probe (auto-discover an id if not provided).
     listing_id = args.listing_id
-    if not listing_id:
-        INFO("No --listing-id given; auto-discovering from public marketplace…")
-        listing_id = _get_listing_id_from_marketplace()
-    probe_check_listing_status(client, listing_id)
+    disc_nft, disc_price = "", 0.0
+    if not listing_id or (args.dry_buy_nft == "auto"):
+        listing_id_disc, disc_nft, disc_price = _discover_listing_id(rep)
+        listing_id = listing_id or listing_id_disc
+    probe_listing_status(rep, client, listing_id)
 
-    # ── section 4: account_listings ─────────────────────────────────────────
-    probe_account_listings(client, account_id)
+    probe_account_listings(rep, client, account_id)
 
-    # ── section 5: dry buy probe (explicit opt-in only) ─────────────────────
+    # Optional unsigned-buy shape probe (explicit opt-in).
     if args.dry_buy_nft:
-        if not args.dry_buy_price or not args.dry_buy_receipt:
-            WARN("--dry-buy-nft given but --dry-buy-price / --dry-buy-receipt missing — skipping buy probe")
-        else:
-            probe_buy_shape(client, args.dry_buy_nft,
-                            args.dry_buy_price, args.dry_buy_receipt)
+        nft = disc_nft if args.dry_buy_nft == "auto" else args.dry_buy_nft
+        price = args.dry_buy_price or disc_price
+        probe_dry_buy(rep, client, nft, price, args.dry_buy_receipt or listing_id)
     else:
-        HEAD("5 / marketplace/buy  [SKIPPED — pass --dry-buy-nft to enable]")
-        INFO("This probe calls marketplace/buy prepare (no signing, no broadcast).")
-        INFO("Use Browser DevTools first to confirm the request shape, then run:")
-        INFO("  python tools/probe_live.py --dry-buy-nft <addr> --dry-buy-price <p> --dry-buy-receipt <id>")
+        rep.h("marketplace/buy — skipped")
+        rep.note("Pass --dry-buy-nft <addr> (or 'auto') to inspect the unsigned "
+                 "tx shape. It never signs or broadcasts.")
 
-    # ── summary ─────────────────────────────────────────────────────────────
-    write_results(args)
+    rep.write(Path(args.out))
+    rep.h("Summary")
+    rep.note("Review the response shapes above and update docs/api.md, then "
+             "ccapi.py / siws.py / executor.py where field names differ.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -56,3 +56,6 @@ cache/
 data/
 output/
 *.bak
+
+# Live API probe output (may contain account-specific data; regenerate locally)
+docs/api_probe_results.md
