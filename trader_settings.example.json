@@ -1,0 +1,31 @@
+{
+  "_comment": "Standard trader tuning defaults. Copy this file to 'trader_settings.json' (git-ignored) and adjust, OR edit the same knobs live from the /trader dashboard (which writes that file). Security/connection variables (wallet secret, TRADER_LIVE, auth, RPC URL, wallet address) live in .env and are intentionally NOT here. Values are stored as strings, mirroring what the UI writes.",
+
+  "TRADER_RESERVE_USDC": "0",
+  "TRADER_GAS_RESERVE_SOL": "0.05",
+
+  "TRADER_BASE_MAX_CARD_USD": "100",
+  "TRADER_MIN_CARD_USD": "0",
+  "TRADER_MIN_DISCOUNT_PCT": "0",
+
+  "TRADER_DIRECT_BUY_PCT": "100",
+  "TRADER_OFFER_PCT": "0",
+  "TRADER_OFFER_DISCOUNT_PCT": "10",
+  "TRADER_OFFER_MAX_PREMIUM_PCT": "10",
+
+  "TRADER_RESELL_DISCOUNT_PCT": "10",
+
+  "TRADER_ESCALATION_VOLUME_USD": "1000",
+  "TRADER_ESCALATION_MAX_CARD_USD": "1000",
+
+  "TRADER_MAX_SPEND_PER_CYCLE_USD": "0",
+  "TRADER_MAX_SPEND_PER_DAY_USD": "0",
+  "TRADER_MAX_OPEN_POSITIONS": "0",
+  "TRADER_MAX_CONSECUTIVE_FAILURES": "0",
+
+  "TRADER_CATEGORIES": "",
+  "TRADER_MAX_PAGES": "10",
+  "TRADER_ALLOWED_MARKETPLACES": "CC",
+
+  "TRADER_LOOP_INTERVAL_SEC": "300"
+}

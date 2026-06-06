@@ -1,13 +1,18 @@
 """UI-editable trader settings.
 
-The trader UI lets the user change the same knobs that normally live in
-``.env``, without touching the file. Overrides are stored in a local,
-git-ignored ``trader_settings.json`` and layered on top of the environment by
-:func:`collectorcrypt.trader.config.load_config`.
+Strategy tuning lives in a local, git-ignored ``trader_settings.json`` (the
+primary store for these knobs); a template ships as
+``trader_settings.example.json``. The trader UI edits the same file. Values are
+layered on top of the environment by
+:func:`collectorcrypt.trader.config.load_config`, so this file wins over any
+leftover ``.env`` value.
 
-Security: the wallet **private key** (``TRADER_WALLET_SECRET``) and the live
-master switch (``TRADER_LIVE``) are deliberately **not** editable here. They
-stay in ``.env`` so a real-spending toggle can never be flipped from the web UI.
+Security / connection variables are deliberately **not** editable here:
+the wallet **private key** (``TRADER_WALLET_SECRET``), the live master switch
+(``TRADER_LIVE``), the auth provider/credentials, ``TRADER_AUTO_RESUME`` and the
+connection settings (``TRADER_RPC_URL``, ``TRADER_WALLET_ADDRESS``) stay in
+``.env`` and are read from the environment only, so a real-spending toggle can
+never be flipped from the web UI and the connection is visible at a glance.
 """
 from __future__ import annotations
 
@@ -25,13 +30,6 @@ OVERRIDES_PATH = Path(os.environ.get("TRADER_SETTINGS_PATH", "trader_settings.js
 # Field specs drive both the UI form and validation. ``type`` is one of
 # "number" | "text" | "csv". Numbers carry optional min/max/step hints.
 EDITABLE_FIELDS: list[dict[str, Any]] = [
-    {"env": "TRADER_RPC_URL", "label": "Solana RPC URL", "type": "text",
-     "group": "Connectivity",
-     "help": "Mainnet RPC endpoint used to read balances."},
-    {"env": "TRADER_WALLET_ADDRESS", "label": "Wallet address", "type": "text",
-     "group": "Connectivity",
-     "help": "Public address (read-only). Required for dry-run."},
-
     {"env": "TRADER_RESERVE_USDC", "label": "USDC reserve", "type": "number",
      "min": 0, "step": 1, "group": "Budget",
      "help": "USDC never spent. Available volume = balance - reserve."},
@@ -42,6 +40,11 @@ EDITABLE_FIELDS: list[dict[str, Any]] = [
     {"env": "TRADER_BASE_MAX_CARD_USD", "label": "Base per-card cap (USD)",
      "type": "number", "min": 0, "step": 1, "group": "Sizing",
      "help": "Default max price per card. Keep low for quantity."},
+    {"env": "TRADER_MIN_CARD_USD", "label": "Min card value (USD)",
+     "type": "number", "min": 0, "step": 1, "group": "Sizing",
+     "help": "Only trade cards whose market (insured) value is at least this. "
+             "Valuable cards resell better and carry less liquidity risk. "
+             "0 = no minimum."},
     {"env": "TRADER_MIN_DISCOUNT_PCT", "label": "Min discount %", "type": "number",
      "min": 0, "max": 100, "step": 1, "group": "Sizing",
      "help": "Only buy when ask is at least this % below insured value."},
@@ -75,6 +78,22 @@ EDITABLE_FIELDS: list[dict[str, Any]] = [
     {"env": "TRADER_ESCALATION_MAX_CARD_USD", "label": "Escalated per-card cap (USD)",
      "type": "number", "min": 0, "step": 1, "group": "Escalation",
      "help": "Per-card cap while escalation is active."},
+
+    {"env": "TRADER_MAX_SPEND_PER_CYCLE_USD", "label": "Max spend per cycle (USD)",
+     "type": "number", "min": 0, "step": 1, "group": "Risk limits",
+     "help": "Hard ceiling on USD committed in one cycle. 0 = no limit. "
+             "Orders beyond the cap are blocked, not sent (live only)."},
+    {"env": "TRADER_MAX_SPEND_PER_DAY_USD", "label": "Max spend per day (USD)",
+     "type": "number", "min": 0, "step": 1, "group": "Risk limits",
+     "help": "Rolling 24h ceiling on realized USD spend across cycles. "
+             "0 = no limit."},
+    {"env": "TRADER_MAX_OPEN_POSITIONS", "label": "Max open positions",
+     "type": "number", "min": 0, "step": 1, "group": "Risk limits",
+     "help": "Cap on concurrent in-flight orders. 0 = no limit."},
+    {"env": "TRADER_MAX_CONSECUTIVE_FAILURES", "label": "Kill switch: consecutive failures",
+     "type": "number", "min": 0, "step": 1, "group": "Risk limits",
+     "help": "Halt all trading after this many real orders fail in a row "
+             "(an anomaly signal). 0 = disabled."},
 
     {"env": "TRADER_CATEGORIES", "label": "Categories", "type": "multiselect",
      "options": [c for c in app_config.SCAN_CATEGORIES if c], "group": "Sourcing",
