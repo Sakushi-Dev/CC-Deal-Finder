@@ -263,9 +263,27 @@ class TraderManager:
         except Exception as exc:  # noqa: BLE001 - surface, never crash snapshot
             base["reconciliation"] = {"error": str(exc)}
             base["order_counts"] = {}
+        # Holdings inventory + unpopular blacklist (ETAPPE 7). Read outside the
+        # state lock and fail-safe to empty lists so a DB hiccup never breaks
+        # the dashboard poll.
+        try:
+            base["holdings"] = [h.to_dict() for h in self._store.holdings_list()]
+            base["blacklist"] = self._store.blacklisted_nfts()
+        except Exception as exc:  # noqa: BLE001 - surface, never crash snapshot
+            base["holdings"] = []
+            base["blacklist"] = []
+            base["holdings_error"] = str(exc)
         base["auth"] = self._auth_status()
         base["risk"] = self._risk_status()
         return base
+
+    def clear_blacklist_entry(self, nft: str) -> None:
+        """Remove an NFT from the unpopular blacklist (UI clear button).
+
+        Thin delegate to the store; the route layer validates the address. A
+        no-op on an unknown NFT (the store's ``clear_blacklist`` is idempotent).
+        """
+        self._store.clear_blacklist(nft)
 
     def _auth_status(self) -> dict[str, Any]:
         """Non-network summary of auth/live readiness for the operator panel.

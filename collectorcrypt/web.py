@@ -315,6 +315,15 @@ def trader_loop_stop():
     return jsonify({"ok": True, "state": _trader().snapshot()})
 
 
+@api_bp.route("/trader/blacklist/clear", methods=["POST"])
+def trader_blacklist_clear():
+    nft = (request.form.get("nft") or "").strip()
+    if not nft or not _NFT_RE.fullmatch(nft):
+        return jsonify({"ok": False, "error": "invalid nftAddress"}), 400
+    _trader().clear_blacklist_entry(nft)
+    return jsonify({"ok": True, "state": _trader().snapshot()})
+
+
 @api_bp.route("/trader/settings", methods=["GET"])
 def trader_settings_get():
     return jsonify({"ok": True, "settings": trader_settings.current_settings()})

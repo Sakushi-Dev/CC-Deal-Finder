@@ -896,6 +896,10 @@ label { font-size: .8rem; color: var(--text-muted); }
   font-family: ui-monospace, monospace;
   margin-left: .3rem;
 }
+.trader-table .link-btn {
+  padding: .15rem .55rem;
+  font-size: .68rem;
+}
 .trader-table {
   width: 100%;
   border-collapse: collapse;

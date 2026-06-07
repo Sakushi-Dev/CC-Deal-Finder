@@ -179,6 +179,72 @@
     }));
   }
 
+  /* ---------------- holdings inventory + blacklist (ETAPPE 7) ----------- */
+  function renderHoldings(s) {
+    s = s || {};
+    const holdings = s.holdings || [];
+    const blacklist = s.blacklist || [];
+    const report = s.report || {};
+
+    // Inventory table.
+    renderTable('holdingsTable', 'holdingsEmpty', 'holdingsCount', holdings.map((h, i) => {
+      const status = h.status || 'held';
+      const cls = status === 'sold' ? 'good' : (h.blacklisted ? 'bad' : '');
+      return `
+      <tr><td>${i + 1}</td>
+      <td>${escapeHtml(h.name || '')}</td>
+      <td>${escapeHtml(h.category || '')}</td>
+      <td class="num">${fmtUSD(h.cost_usd)}</td>
+      <td class="num">${fmtUSD(h.market_usd_at_buy)}</td>
+      <td class="num">${h.list_price_usd != null ? fmtUSD(h.list_price_usd) : '—'}</td>
+      <td class="num">${num(h.markdown_steps)}</td>
+      <td class="${cls}">${escapeHtml(status)}</td></tr>`;
+    }));
+
+    // Maintenance summary bar (the ETAPPE 6 passes; live cycles only).
+    const maintBar = $('maintBar');
+    const hasMaint = report.bumped !== undefined || report.marked_down !== undefined;
+    if (maintBar) {
+      if (hasMaint) {
+        maintBar.style.display = 'flex';
+        setText('maintBumped', (report.bumped || []).length);
+        setText('maintCancelled', (report.cancelled || []).length);
+        setText('maintMarkedDown', (report.marked_down || []).length);
+        setText('maintAccepted', (report.offers_accepted || []).length);
+        const rc = report.market_recheck || {};
+        setText('maintRecheck', rc.note ? `re-check: ${rc.note}` : '');
+      } else {
+        maintBar.style.display = 'none';
+      }
+    }
+
+    // Bumped offers (offer-penetration bump counter).
+    const bumpSection = $('bumpSection');
+    const bumped = report.bumped;
+    if (bumpSection) {
+      if (bumped === undefined) {
+        bumpSection.style.display = 'none';
+      } else {
+        bumpSection.style.display = '';
+        renderTable('bumpTable', 'bumpEmpty', 'bumpCount', (bumped || []).map((it, i) => {
+          const status = it.status || '—';
+          return `
+          <tr><td>${i + 1}</td>
+          <td>${escapeHtml(it.name || it.nft || '')}</td>
+          <td class="num">${fmtUSD(it.new_price_usd)}</td>
+          <td class="num">${num(it.bump_count)}</td>
+          <td title="${escapeHtml(it.detail || '')}">${escapeHtml(status)}</td></tr>`;
+        }));
+      }
+    }
+
+    // Unpopular blacklist (always visible; per-row clear button).
+    renderTable('blacklistTable', 'blacklistEmpty', 'blacklistCount', blacklist.map((nft, i) => `
+      <tr><td>${i + 1}</td>
+      <td title="${escapeHtml(nft)}">${escapeHtml(nft)}</td>
+      <td class="num"><button type="button" class="link-btn" data-clear-nft="${escapeHtml(nft)}">Clear</button></td></tr>`));
+  }
+
   function renderTable(tableId, emptyId, countId, rows) {
     const tbody = document.querySelector(`#${tableId} tbody`);
     const empty = $(emptyId);
@@ -359,6 +425,7 @@
     // back to the snapshot's read-only posture before any cycle has run.
     renderRisk((s.report && s.report.risk) || s.risk);
     renderRecovery(s.recovery);
+    renderHoldings(s);
 
     $('runBtn').disabled = !!s.running;
     $('runBtn').textContent = s.running ? 'Running …' : 'Run cycle now';
@@ -409,6 +476,18 @@
   $('pauseBtn').addEventListener('click', () => post('/trader/loop/pause'));
   $('resumeBtn').addEventListener('click', () => post('/trader/loop/resume'));
   $('stopBtn').addEventListener('click', () => post('/trader/loop/stop'));
+
+  /* ---------------- blacklist clear (event-delegated) ---------------- */
+  const blacklistTable = $('blacklistTable');
+  if (blacklistTable) {
+    blacklistTable.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-clear-nft]');
+      if (!btn) return;
+      const fd = new FormData();
+      fd.append('nft', btn.dataset.clearNft);
+      post('/trader/blacklist/clear', fd);
+    });
+  }
 
   /* ---------------- tabs ---------------- */
   document.querySelectorAll('.tab').forEach(tab => {

@@ -44,6 +44,7 @@
   <div class="tabs">
     <button type="button" class="tab active" data-tab="overview">Overview</button>
     <button type="button" class="tab" data-tab="plan">Planned orders</button>
+    <button type="button" class="tab" data-tab="holdings">Holdings</button>
     <button type="button" class="tab" data-tab="history">History</button>
   </div>
 </div>
@@ -174,6 +175,56 @@
       <tbody></tbody>
     </table>
     <div id="scanEmpty" class="empty">No listings scanned yet.</div>
+  </div>
+</div>
+
+<!-- Holdings panel (ETAPPE 7) -->
+<div class="panel" data-panel="holdings">
+  <!-- Maintenance summary: the new offer-penetration / floor passes (ETAPPE 6) -->
+  <div class="stats" id="maintBar" style="display:none;">
+    <span>Bumped: <b id="maintBumped">0</b></span>
+    <span>Cancelled: <b id="maintCancelled">0</b></span>
+    <span>Marked down: <b id="maintMarkedDown">0</b></span>
+    <span>Offers accepted: <b id="maintAccepted">0</b></span>
+    <span class="meta" id="maintRecheck"></span>
+  </div>
+
+  <div class="trader-section">
+    <h3>Inventory <span id="holdingsCount" class="count">0</span></h3>
+    <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+      Cards the bot currently owns (settled buys / filled offers, not yet sold).
+      The markdown steps and live status track each card through the post-buy
+      lifecycle. Populated on real (non-simulated) settles only.
+    </div>
+    <table class="trader-table" id="holdingsTable">
+      <thead><tr><th>#</th><th>Card</th><th>Category</th><th class="num">Cost</th><th class="num">Market@buy</th><th class="num">List</th><th class="num">Steps</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="holdingsEmpty" class="empty">No cards held yet.</div>
+  </div>
+
+  <!-- Offer penetration: bumped offers with their bump counter (ETAPPE 6) -->
+  <div class="trader-section" id="bumpSection" style="display:none;">
+    <h3>Offer bumps this cycle <span id="bumpCount" class="count">0</span></h3>
+    <table class="trader-table" id="bumpTable">
+      <thead><tr><th>#</th><th>Card</th><th class="num">New bid</th><th class="num">Bumps</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="bumpEmpty" class="empty">No offers bumped this cycle.</div>
+  </div>
+
+  <!-- Unpopular blacklist (always visible, UI-clearable) -->
+  <div class="trader-section" id="blacklistSection">
+    <h3>Unpopular blacklist <span id="blacklistCount" class="count">0</span></h3>
+    <div class="meta" style="font-family:inherit;color:var(--text-muted);">
+      NFT addresses flagged unpopular (unsold past the threshold). These are
+      never bought or offered on again. Clearing one re-allows acquisition.
+    </div>
+    <table class="trader-table" id="blacklistTable">
+      <thead><tr><th>#</th><th>NFT address</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="blacklistEmpty" class="empty">Blacklist is empty.</div>
   </div>
 </div>
 
