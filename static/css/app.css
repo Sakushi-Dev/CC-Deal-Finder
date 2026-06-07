@@ -923,12 +923,130 @@ label { font-size: .8rem; color: var(--text-muted); }
 .trader-table td.bad  { color: var(--bad);  }
 .trader-table tbody tr:hover td { background: var(--bg-hover); }
 
-.trader-settings {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: .75rem 1rem;
-  width: 100%;
-  align-items: end;
+/* Grouped, documented settings drawer ------------------------------- */
+.settings-drawer {
+  padding: 1rem 1.5rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
-.trader-settings .group { display: flex; flex-direction: column; gap: .25rem; }
+.settings-intro {
+  color: var(--text-muted);
+  font-size: .8rem;
+  line-height: 1.5;
+  max-width: 70ch;
+}
+.settings-intro code {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0 .3em;
+  font-size: .92em;
+}
+/* The settings form switches from the legacy grid to a stack of groups. */
+.trader-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.settings-group {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: .85rem 1rem 1rem;
+  margin: 0;
+  background: var(--bg);
+}
+.settings-group > legend {
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--text);
+  padding: 0 .5rem;
+  margin-left: -.25rem;
+}
+.settings-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: .9rem 1.25rem;
+  align-items: start;
+}
+.set-field { display: flex; flex-direction: column; gap: .3rem; }
+.set-head {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.set-head label {
+  font-size: .68rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.info-btn {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: .68rem;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.info-btn:hover,
+.info-btn[aria-expanded="true"] {
+  color: var(--text-bright);
+  border-color: var(--text);
+  background: var(--bg-hover);
+}
+.info-btn-demo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: .65rem;
+  vertical-align: middle;
+}
+.set-field input[type=number],
+.set-field input[type=text],
+.set-field select {
+  padding: .4rem .55rem;
+  font-size: .8rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+.set-help {
+  margin: 0;
+  font-size: .73rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-strong);
+  padding: .3rem 0 .3rem .55rem;
+}
+.set-field .hint { font-size: .68rem; color: var(--text-dim); }
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  justify-content: flex-end;
+}
 

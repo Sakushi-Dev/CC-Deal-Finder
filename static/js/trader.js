@@ -506,6 +506,20 @@
     const p = $('settingsPanel');
     p.style.display = p.style.display === 'none' ? 'flex' : 'none';
   });
+  // Per-setting info buttons: toggle the explanation under the field.
+  const settingsForm = $('settingsForm');
+  if (settingsForm) {
+    settingsForm.addEventListener('click', (e) => {
+      const btn = e.target.closest('.info-btn');
+      if (!btn) return;
+      e.preventDefault();
+      const help = btn.closest('.set-field')?.querySelector('.set-help');
+      if (!help) return;
+      const open = help.hidden;
+      help.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+    });
+  }
   $('settingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {};

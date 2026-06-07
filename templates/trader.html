@@ -52,38 +52,55 @@
 <div id="errorBox" class="error" style="display:none;"></div>
 
 <!-- Settings drawer -->
-<div id="settingsPanel" class="filters" style="display:none;flex-direction:column;">
-  <div class="meta" style="font-family:inherit;color:var(--text-muted);width:100%;">
+<div id="settingsPanel" class="settings-drawer" style="display:none;">
+  <div class="settings-intro">
     These override your <code>.env</code> at runtime (saved locally to
     <code>trader_settings.json</code>). The private key and live switch stay in
-    <code>.env</code> and cannot be changed here.
+    <code>.env</code> and cannot be changed here. Tap the
+    <span class="info-btn-demo">i</span> next to any setting for an explanation.
   </div>
   <form id="settingsForm" class="trader-settings">
-    {% for f in settings %}
-    <div class="group" title="{{ f.help }}">
-      <label for="set_{{ f.env }}">{{ f.label }}</label>
-      {% if f.type == 'number' %}
-      <input type="number" id="set_{{ f.env }}" name="{{ f.env }}"
-             value="{{ f.value }}"
-             {% if f.min is defined %}min="{{ f.min }}"{% endif %}
-             {% if f.max is defined %}max="{{ f.max }}"{% endif %}
-             {% if f.step is defined %}step="{{ f.step }}"{% endif %}>
-      {% elif f.type == 'multiselect' %}
-      {% set picked = f.value.split(',') | map('trim') | list %}
-      <select id="set_{{ f.env }}" data-cat-field multiple size="6">
-        {% for opt in f.options %}
-        <option value="{{ opt }}" {% if opt in picked %}selected{% endif %}>{{ opt }}</option>
+    {# Build the group list in their defined order (Jinja's groupby would re-sort). #}
+    {% set ordered_groups = [] %}
+    {% for f in settings %}{% if f.group not in ordered_groups %}{{ ordered_groups.append(f.group) or '' }}{% endif %}{% endfor %}
+    {% for group in ordered_groups %}
+    <fieldset class="settings-group">
+      <legend>{{ group }}</legend>
+      <div class="settings-group-grid">
+        {% for f in settings if f.group == group %}
+        <div class="set-field">
+          <div class="set-head">
+            <label for="set_{{ f.env }}">{{ f.label }}</label>
+            <button type="button" class="info-btn" aria-expanded="false"
+                    aria-label="What does “{{ f.label }}” do?"
+                    title="{{ f.help }}">i</button>
+          </div>
+          {% if f.type == 'number' %}
+          <input type="number" id="set_{{ f.env }}" name="{{ f.env }}"
+                 value="{{ f.value }}"
+                 {% if f.min is defined %}min="{{ f.min }}"{% endif %}
+                 {% if f.max is defined %}max="{{ f.max }}"{% endif %}
+                 {% if f.step is defined %}step="{{ f.step }}"{% endif %}>
+          {% elif f.type == 'multiselect' %}
+          {% set picked = f.value.split(',') | map('trim') | list %}
+          <select id="set_{{ f.env }}" data-cat-field multiple size="6">
+            {% for opt in f.options %}
+            <option value="{{ opt }}" {% if opt in picked %}selected{% endif %}>{{ opt }}</option>
+            {% endfor %}
+          </select>
+          <small class="hint">Hold Ctrl (Cmd on Mac) to pick several. None = all.</small>
+          {% else %}
+          <input type="text" id="set_{{ f.env }}" name="{{ f.env }}"
+                 value="{{ f.value }}"
+                 {% if f.type == 'csv' %}placeholder="comma,separated"{% endif %}>
+          {% endif %}
+          <p class="set-help" hidden>{{ f.help }}</p>
+        </div>
         {% endfor %}
-      </select>
-      <small class="hint">Hold Ctrl (Cmd on Mac) to pick several. None = all.</small>
-      {% else %}
-      <input type="text" id="set_{{ f.env }}" name="{{ f.env }}"
-             value="{{ f.value }}"
-             {% if f.type == 'csv' %}placeholder="comma,separated"{% endif %}>
-      {% endif %}
-    </div>
+      </div>
+    </fieldset>
     {% endfor %}
-    <div class="actions" style="width:100%;">
+    <div class="settings-actions">
       <span id="settingsMsg" class="meta"></span>
       <button type="submit" class="primary">Save settings</button>
     </div>
