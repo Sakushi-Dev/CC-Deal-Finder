@@ -161,6 +161,62 @@ def test_categories_from_json(clean_env, settings_file):
 
 
 # --------------------------------------------------------------------------- #
+# Holdings lifecycle tunables (Etappe 2) — defaults + JSON overrides
+# --------------------------------------------------------------------------- #
+def test_holdings_tunable_defaults(clean_env, settings_file):
+    cfg = load_config()
+    assert cfg.offer_bump_usd == 0.10
+    assert cfg.offer_bump_age_hours == 24.0
+    assert cfg.offer_bump_max == 3
+    assert cfg.min_operate_usd == 0.0
+    assert cfg.max_owned_cards == 0
+    assert cfg.unpopular_days == 7.0
+    assert cfg.markdown_delay_days == 3.0
+    assert cfg.markdown_step_pct == 1.0
+    assert cfg.markdown_interval_days == 3.0
+    assert cfg.offer_accept_delay_days == 3.0
+    assert cfg.offer_accept_min_market_pct == 0.0
+    assert cfg.market_recheck_hours == 24.0
+
+
+def test_holdings_tunables_from_json(clean_env, settings_file):
+    settings_file.write_text(json.dumps({
+        "TRADER_OFFER_BUMP_USD": "0.25",
+        "TRADER_OFFER_BUMP_AGE_HOURS": "12",
+        "TRADER_OFFER_BUMP_MAX": "5",
+        "TRADER_MIN_OPERATE_USD": "50",
+        "TRADER_MAX_OWNED_CARDS": "20",
+        "TRADER_UNPOPULAR_DAYS": "10",
+        "TRADER_MARKDOWN_DELAY_DAYS": "2",
+        "TRADER_MARKDOWN_STEP_PCT": "2.5",
+        "TRADER_MARKDOWN_INTERVAL_DAYS": "4",
+        "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
+        "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "80",
+        "TRADER_MARKET_RECHECK_HOURS": "6",
+    }))
+    cfg = load_config()
+    assert cfg.offer_bump_usd == 0.25
+    assert cfg.offer_bump_age_hours == 12.0
+    assert cfg.offer_bump_max == 5
+    assert cfg.min_operate_usd == 50.0
+    assert cfg.max_owned_cards == 20
+    assert cfg.unpopular_days == 10.0
+    assert cfg.markdown_delay_days == 2.0
+    assert cfg.markdown_step_pct == 2.5
+    assert cfg.markdown_interval_days == 4.0
+    assert cfg.offer_accept_delay_days == 5.0
+    assert cfg.offer_accept_min_market_pct == 80.0
+    assert cfg.market_recheck_hours == 6.0
+
+
+def test_offer_bump_max_is_int(clean_env, settings_file):
+    settings_file.write_text(json.dumps({"TRADER_OFFER_BUMP_MAX": "4"}))
+    val = load_config().offer_bump_max
+    assert isinstance(val, int)
+    assert val == 4
+
+
+# --------------------------------------------------------------------------- #
 # EDITABLE_FIELDS must NOT expose connection/security keys
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("forbidden", [
@@ -176,6 +232,12 @@ def test_security_keys_not_editable(forbidden):
     "TRADER_RESERVE_USDC", "TRADER_BASE_MAX_CARD_USD", "TRADER_MIN_CARD_USD",
     "TRADER_MIN_DISCOUNT_PCT", "TRADER_MAX_SPEND_PER_CYCLE_USD",
     "TRADER_MAX_CONSECUTIVE_FAILURES", "TRADER_CATEGORIES",
+    "TRADER_OFFER_BUMP_USD", "TRADER_OFFER_BUMP_AGE_HOURS",
+    "TRADER_OFFER_BUMP_MAX", "TRADER_MIN_OPERATE_USD",
+    "TRADER_MAX_OWNED_CARDS", "TRADER_UNPOPULAR_DAYS",
+    "TRADER_MARKDOWN_DELAY_DAYS", "TRADER_MARKDOWN_STEP_PCT",
+    "TRADER_MARKDOWN_INTERVAL_DAYS", "TRADER_OFFER_ACCEPT_DELAY_DAYS",
+    "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT", "TRADER_MARKET_RECHECK_HOURS",
 ])
 def test_tunables_are_editable(expected):
     assert expected in settingsmod._EDITABLE_ENV

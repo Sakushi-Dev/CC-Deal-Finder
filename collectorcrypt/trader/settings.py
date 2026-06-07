@@ -95,6 +95,52 @@ EDITABLE_FIELDS: list[dict[str, Any]] = [
      "help": "Halt all trading after this many real orders fail in a row "
              "(an anomaly signal). 0 = disabled."},
 
+    {"env": "TRADER_OFFER_BUMP_USD", "label": "Offer bump amount (USDC)",
+     "type": "number", "min": 0, "step": 0.01, "group": "Offers",
+     "help": "How much to raise an aged open offer to re-trigger the owner's "
+             "notification (e.g. 0.10 USDC)."},
+    {"env": "TRADER_OFFER_BUMP_AGE_HOURS", "label": "Offer age before bump (hours)",
+     "type": "number", "min": 0, "step": 1, "group": "Offers",
+     "help": "An open offer older than this is bumped once more."},
+    {"env": "TRADER_OFFER_BUMP_MAX", "label": "Max offer bumps",
+     "type": "number", "min": 0, "step": 1, "group": "Offers",
+     "help": "After this many bumps with no reaction, the offer is cancelled "
+             "(escrow refunds)."},
+
+    {"env": "TRADER_MIN_OPERATE_USD", "label": "Min operating volume (USDC)",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "Below this available volume the bot stops new buys/offers but "
+             "keeps managing inventory it already owns. 0 = disabled."},
+    {"env": "TRADER_MAX_OWNED_CARDS", "label": "Max owned cards",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "Cap on actually held (unsold) cards. 0 = disabled."},
+    {"env": "TRADER_UNPOPULAR_DAYS", "label": "Days unsold → blacklist",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "A held card unsold this long is flagged unpopular and never "
+             "bought/offered again (clearable in the UI)."},
+    {"env": "TRADER_MARKDOWN_DELAY_DAYS", "label": "Days unsold → start markdown",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "How long a listed card may sit before the markdown curve starts."},
+    {"env": "TRADER_MARKDOWN_STEP_PCT", "label": "Markdown step % (of buy market value)",
+     "type": "number", "min": 0, "max": 100, "step": 0.5, "group": "Holdings",
+     "help": "Each markdown step lowers the price by this % of the card's "
+             "market value at buy. Never goes below cost (0% profit floor)."},
+    {"env": "TRADER_MARKDOWN_INTERVAL_DAYS", "label": "Days between markdown steps",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "Spacing between successive markdown steps."},
+    {"env": "TRADER_OFFER_ACCEPT_DELAY_DAYS", "label": "Days after floor → accept offers",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "Once at the cost floor for this long, the best incoming offer "
+             "may be accepted."},
+    {"env": "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT", "label": "Min market % to accept a bid",
+     "type": "number", "min": 0, "max": 100, "step": 1, "group": "Holdings",
+     "help": "An incoming offer is only accepted if it is at least this % of "
+             "market value. 0 = disabled (accept any)."},
+    {"env": "TRADER_MARKET_RECHECK_HOURS", "label": "Held-card market re-check (hours)",
+     "type": "number", "min": 0, "step": 1, "group": "Holdings",
+     "help": "How often a held card's current market value is re-checked. A "
+             "rise raises the resale price and restarts the sell cycle."},
+
     {"env": "TRADER_CATEGORIES", "label": "Categories", "type": "multiselect",
      "options": [c for c in app_config.SCAN_CATEGORIES if c], "group": "Sourcing",
      "help": "Tick the categories to scan. None selected = all categories."},

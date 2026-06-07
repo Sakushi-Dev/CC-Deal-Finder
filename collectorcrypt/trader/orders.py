@@ -160,6 +160,11 @@ class Order:
     error: str = ""
     detail: str = ""
 
+    # Offer penetration (ETAPPE 1): how many times an open offer has been
+    # bumped to re-trigger the owner's notification, and when last bumped.
+    bump_count: int = 0
+    last_bump_at: float = 0.0
+
     # Timestamps and audit trail.
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -256,6 +261,8 @@ class Order:
             "signature": self.signature,
             "error": self.error,
             "detail": self.detail,
+            "bump_count": self.bump_count,
+            "last_bump_at": self.last_bump_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "history": list(self.history),
@@ -282,6 +289,8 @@ class Order:
             signature=data.get("signature", ""),
             error=data.get("error", ""),
             detail=data.get("detail", ""),
+            bump_count=int(data.get("bump_count") or 0),
+            last_bump_at=float(data.get("last_bump_at") or 0.0),
             created_at=float(data.get("created_at", time.time())),
             updated_at=float(data.get("updated_at", time.time())),
             history=list(data.get("history", [])),

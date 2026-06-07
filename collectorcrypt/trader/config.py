@@ -120,6 +120,25 @@ class TraderConfig:
     max_open_positions: int
     max_consecutive_failures: int
 
+    # Offer penetration (holdings-lifecycle). An aged open offer is bumped a
+    # small amount to re-trigger the owner's notification, up to a max count,
+    # then cancelled (escrow refunds).
+    offer_bump_usd: float
+    offer_bump_age_hours: float
+    offer_bump_max: int
+
+    # Holdings lifecycle (holdings-lifecycle). 0 = disabled where it is a cap or
+    # threshold, so existing setups are unchanged until an operator opts in.
+    min_operate_usd: float        # below this available volume, stop acquiring
+    max_owned_cards: int          # cap on actually held (unsold) cards
+    unpopular_days: float         # held + unsold this long -> blacklist
+    markdown_delay_days: float    # unsold this long -> start the markdown curve
+    markdown_step_pct: float      # markdown step, % of market value at buy
+    markdown_interval_days: float # days between markdown steps
+    offer_accept_delay_days: float  # days after floor -> accept best offer
+    offer_accept_min_market_pct: float  # min market % to accept an incoming bid
+    market_recheck_hours: float   # held-card market re-check interval
+
     # Sourcing
     categories: tuple[str, ...]
     max_pages: int
@@ -191,6 +210,18 @@ def load_config() -> TraderConfig:
         max_spend_per_day_usd=_get_float(src, "TRADER_MAX_SPEND_PER_DAY_USD", 0.0),
         max_open_positions=_get_int(src, "TRADER_MAX_OPEN_POSITIONS", 0),
         max_consecutive_failures=_get_int(src, "TRADER_MAX_CONSECUTIVE_FAILURES", 0),
+        offer_bump_usd=_get_float(src, "TRADER_OFFER_BUMP_USD", 0.10),
+        offer_bump_age_hours=_get_float(src, "TRADER_OFFER_BUMP_AGE_HOURS", 24.0),
+        offer_bump_max=_get_int(src, "TRADER_OFFER_BUMP_MAX", 3),
+        min_operate_usd=_get_float(src, "TRADER_MIN_OPERATE_USD", 0.0),
+        max_owned_cards=_get_int(src, "TRADER_MAX_OWNED_CARDS", 0),
+        unpopular_days=_get_float(src, "TRADER_UNPOPULAR_DAYS", 7.0),
+        markdown_delay_days=_get_float(src, "TRADER_MARKDOWN_DELAY_DAYS", 3.0),
+        markdown_step_pct=_get_float(src, "TRADER_MARKDOWN_STEP_PCT", 1.0),
+        markdown_interval_days=_get_float(src, "TRADER_MARKDOWN_INTERVAL_DAYS", 3.0),
+        offer_accept_delay_days=_get_float(src, "TRADER_OFFER_ACCEPT_DELAY_DAYS", 3.0),
+        offer_accept_min_market_pct=_get_float(src, "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT", 0.0),
+        market_recheck_hours=_get_float(src, "TRADER_MARKET_RECHECK_HOURS", 24.0),
         categories=_get_tuple(src, "TRADER_CATEGORIES", ("",)),
         max_pages=_get_int(src, "TRADER_MAX_PAGES", 10),
         allowed_marketplaces=_get_tuple(src, "TRADER_ALLOWED_MARKETPLACES", ("CC",)),
