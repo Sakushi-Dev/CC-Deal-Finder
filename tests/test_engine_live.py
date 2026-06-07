@@ -22,7 +22,7 @@ from collectorcrypt.trader.orders import OrderKind, OrderStatus
 from collectorcrypt.trader.store import Holding
 
 from .conftest import (FakeSessionProvider, FakeWallet, make_buy, make_config,
-                       make_list, new_keypair, keypair_secret)
+                       make_list, make_offer, new_keypair, keypair_secret)
 
 
 class FakeSourceClient:
@@ -249,6 +249,92 @@ def test_live_cycle_exit_flow_lists_relist_candidate(store):
     report = engine.run_cycle()
     assert len(report["relisted"]) == 1
     assert report["relisted"][0]["nft"] == "R"
+
+
+# --------------------------------------------------------------------------- #
+# Maintenance passes (ETAPPE 6): bump / cancel / markdown / accept / recheck
+# --------------------------------------------------------------------------- #
+_MAINT_KEYS = ("bumped", "cancelled", "marked_down", "offers_accepted",
+               "market_recheck")
+
+
+def _seed_aged_open_offer(store, *, nft="O1", price=8.0, bump_count=0,
+                          age_sec=200_000.0):
+    """Persist an OPEN offer old enough to be due for a bump."""
+    import time as _t
+    o = make_offer(nft=nft, price_usd=price, market_usd=20.0, cycle_id="prev")
+    o.bump_count = bump_count
+    o.transition(OrderStatus.OPEN)
+    o.created_at = _t.time() - age_sec
+    store.upsert_order(o)
+
+
+def test_live_cycle_exposes_maintenance_keys(store):
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    for key in _MAINT_KEYS:
+        assert key in report
+
+
+def test_live_cycle_market_recheck_is_readonly_stub(store):
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["market_recheck"]["checked"] == 0
+    assert "pending" in report["market_recheck"]["note"]
+
+
+def test_dryrun_cycle_no_maintenance_keys(store):
+    engine = make_engine(make_config(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    for key in _MAINT_KEYS:
+        assert key not in report
+
+
+def test_demo_cycle_no_maintenance_keys():
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=None)
+    report = engine.run_cycle()
+    for key in _MAINT_KEYS:
+        assert key not in report
+
+
+def test_live_cycle_bumps_due_offer_safely(store):
+    # An aged OPEN offer is surfaced by the bump pass, but the live executor
+    # leaves it untouched (safe no-op) until Etappe 8 verifies the shape.
+    _seed_aged_open_offer(store, nft="O1", price=8.0)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert len(report["bumped"]) == 1
+    assert report["bumped"][0]["nft"] == "O1"
+    # Safe no-op: the persisted offer is unchanged (still OPEN, no bump).
+    persisted = store.open_offers()
+    assert len(persisted) == 1
+    assert persisted[0].status is OrderStatus.OPEN
+    assert persisted[0].bump_count == 0
+
+
+def test_halted_cycle_empties_send_passes_but_keeps_recheck(store):
+    # Trip the kill switch with three real consecutive failures.
+    for i in range(3):
+        f = make_buy(nft=f"F{i}", cycle_id="prev")
+        f.transition(OrderStatus.FAILED, detail="x")
+        store.upsert_order(f)
+    _seed_aged_open_offer(store, nft="O1", price=8.0)
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      max_consecutive_failures=3)
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store)
+    report = engine.run_cycle()
+    assert report["relisted"] == []
+    assert report["bumped"] == []
+    assert report["cancelled"] == []
+    assert report["marked_down"] == []
+    assert report["offers_accepted"] == []
+    # The read-only re-check still runs while halted.
+    assert report["market_recheck"]["checked"] == 0
 
 
 # --------------------------------------------------------------------------- #

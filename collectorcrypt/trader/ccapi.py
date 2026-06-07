@@ -54,9 +54,11 @@ EP_CANCEL_OFFER = "marketplace/cancel-offer"
 EP_LIST = "marketplace/list"               # list a card -> returns tx
 EP_UPDATE_LISTING = "marketplace/update-listing"
 EP_CANCEL_LISTING = "marketplace/cancel-listing"
+EP_ACCEPT_OFFER = "marketplace/accept-offer"
 EP_BROADCAST = "marketplace/broadcast"     # broadcast a signed tx
 EP_CALC_LISTING_FEE = "calcListingFee"
 RPC_CHECK_LISTING_STATUS = "checkListingStatus"   # VERIFIED 200 (RPC method)
+RPC_GET_CARD_OFFERS = "getCardOffers"             # ASSUMED (RPC read)
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +178,16 @@ class CCTradingClient:
             params={"nftAddress": nft, "price": price, "currency": currency},
         )
 
+    def get_card_offers(self, *, nft: str) -> dict[str, Any]:
+        """Read the standing offers (bids) on a card. ASSUMED (RPC read).
+
+        RPC call: ``POST /v2`` with ``{method:"getCardOffers", params:{nftAddress}}``.
+        A read, so it is idempotent and retryable; the response shape is
+        reverse-engineered (the RPC name is known from the bundle) and must be
+        captured before driving a live accept-offer decision.
+        """
+        return self._rpc(RPC_GET_CARD_OFFERS, {"nftAddress": nft})
+
     # ------------------------------------------------------------------ #
     # Trading writes (state-changing -> NEVER auto-retried)
     # ------------------------------------------------------------------ #
@@ -238,6 +250,40 @@ class CCTradingClient:
     def cancel_offer(self, *, offer_id: str) -> dict[str, Any]:
         return self._request("POST", EP_CANCEL_OFFER, auth=True,
                              json={"id": offer_id})
+
+    def update_listing(self, *, nft: str, price: float, currency: str = "USDC",
+                       extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Change the price of a live listing (markdown). ASSUMED.
+
+        ``POST marketplace/update-listing`` with
+        ``{nftAddress, price, currency}`` — mirrors ``create_listing`` but edits
+        an existing listing in place. Returns a tx to sign. State-changing, so
+        it is never auto-retried; the body is reverse-engineered (path confirmed
+        from the bundle map, body not yet probed) and must not drive a live
+        markdown until verified.
+        """
+        body: dict[str, Any] = {"nftAddress": nft, "price": price,
+                                "currency": currency}
+        if extra:
+            body.update(extra)
+        return self._request("POST", EP_UPDATE_LISTING, auth=True, json=body)
+
+    def accept_offer(self, *, offer_id: str, nft: str = "",
+                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Accept a standing offer (bid) on an owned card. ASSUMED.
+
+        ``POST marketplace/accept-offer`` with ``{id, nftAddress?}``. Returns a
+        tx to sign that settles the sale. State-changing, so it is never
+        auto-retried; the body is reverse-engineered (path confirmed from the
+        bundle map, body not yet probed) and must not drive a live accept until
+        verified.
+        """
+        body: dict[str, Any] = {"id": offer_id}
+        if nft:
+            body["nftAddress"] = nft
+        if extra:
+            body.update(extra)
+        return self._request("POST", EP_ACCEPT_OFFER, auth=True, json=body)
 
     def broadcast(self, *, signed_tx: str, wallet: str = "", nft: str = "",
                   extra: dict[str, Any] | None = None) -> dict[str, Any]:

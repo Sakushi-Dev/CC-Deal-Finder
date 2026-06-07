@@ -12,6 +12,7 @@ Returns a plain ``dict`` report so it can be printed, logged or served as JSON.
 """
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any
 
@@ -21,11 +22,14 @@ from .auth import SessionProvider
 from .ccapi import CCApiError, CCTradingClient
 from .config import TraderConfig
 from .executor import DryRunExecutor, Executor, LiveExecutor
+from .holdings import (SECONDS_PER_DAY, is_due_for_markdown,
+                       is_due_for_offer_accept, markdown_price,
+                       next_bump_price, should_bump, should_cancel_offer)
 from .orders import Order, OrderKind, OrderStatus, plan_to_orders
 from .reconcile import StatusSyncer
 from .risk import RiskEngine
 from .siws import make_session_provider
-from .store import OrderStore
+from .store import Holding, OrderStore
 from .strategy import (BuyPlan, build_plan, diagnose_listings,
                        make_candidates, make_offer_candidates)
 from .wallet import Wallet
@@ -264,8 +268,20 @@ class TradeEngine:
             halted = bool(risk_decision and risk_decision.halted)
             if halted:
                 report["relisted"] = []
+                report["bumped"] = []
+                report["cancelled"] = []
+                report["marked_down"] = []
+                report["offers_accepted"] = []
             else:
                 report["relisted"] = self._run_exit_flow(executor)
+                report["bumped"] = self._run_offer_bump_pass(executor)
+                report["cancelled"] = self._run_offer_cancel_pass(executor)
+                report["marked_down"] = self._run_markdown_pass(executor)
+                report["offers_accepted"] = self._run_accept_offer_pass(executor)
+            # The market re-check is a read-only inventory pass, so it runs even
+            # while the kill switch is tripped (it never signs or spends).
+            report["market_recheck"] = self._run_market_recheck()
+
 
         # Durable persistence: real cycles only. Demo never touches the ledger.
         if self._store is not None and persist and not demo:
@@ -320,6 +336,158 @@ class TradeEngine:
                 "category": listed.category,
             })
         return results
+
+    # ------------------------------------------------------------------ #
+    # Inventory maintenance passes (ETAPPE 6)
+    # ------------------------------------------------------------------ #
+    # Each pass selects its due set with the Etappe 1 store queries, decides
+    # with the Etappe 3 pure functions, and drives the action through the live
+    # executor. The executor's maintenance actions are SAFE-FAILURE until
+    # Etappe 8 verifies the request shapes, so these passes are observable but
+    # move no money yet. All run only on the armed live executor and never raise.
+    def _run_offer_bump_pass(self, executor: Executor) -> list[dict[str, Any]]:
+        """Bump aged open offers to re-trigger the owner's notification."""
+        if not isinstance(executor, LiveExecutor):
+            return []
+        try:
+            offers = self._store.open_offers()  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 - maintenance must not crash a cycle
+            return [{"error": f"could not load open offers: {exc}"}]
+        now = time.time()
+        results: list[dict[str, Any]] = []
+        for order in offers:
+            if not should_bump(order, self._cfg, now):
+                continue
+            new_price = next_bump_price(order, self._cfg)
+            out = executor.bump_offer(order, new_price)
+            results.append({
+                "nft": out.nft,
+                "name": out.name,
+                "new_price_usd": round(new_price, 2),
+                "bump_count": out.bump_count,
+                "status": out.status.value,
+                "detail": out.detail,
+            })
+        return results
+
+    def _run_offer_cancel_pass(self, executor: Executor) -> list[dict[str, Any]]:
+        """Cancel offers that exhausted their bumps and still did not fill."""
+        if not isinstance(executor, LiveExecutor):
+            return []
+        try:
+            offers = self._store.open_offers()  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001
+            return [{"error": f"could not load open offers: {exc}"}]
+        now = time.time()
+        results: list[dict[str, Any]] = []
+        for order in offers:
+            if not should_cancel_offer(order, self._cfg, now):
+                continue
+            out = executor.cancel_offer(order)
+            results.append({
+                "nft": out.nft,
+                "name": out.name,
+                "status": out.status.value,
+                "detail": out.detail,
+            })
+        return results
+
+    def _run_markdown_pass(self, executor: Executor) -> list[dict[str, Any]]:
+        """Step down the price of listed-but-unsold cards toward the cost floor."""
+        if not isinstance(executor, LiveExecutor):
+            return []
+        delay_sec = max(0.0, self._cfg.markdown_delay_days) * SECONDS_PER_DAY
+        # Coarse step ceiling for the query; the pure logic enforces the floor.
+        step_pct = max(0.01, float(self._cfg.markdown_step_pct))
+        max_steps = max(1, int(100.0 / step_pct) + 1)
+        try:
+            due = self._store.holdings_due_for_markdown(  # type: ignore[union-attr]
+                min_listed_age_sec=delay_sec, max_steps=max_steps)
+        except Exception as exc:  # noqa: BLE001
+            return [{"error": f"could not load markdown candidates: {exc}"}]
+        now = time.time()
+        results: list[dict[str, Any]] = []
+        for holding in due:
+            if not is_due_for_markdown(holding, self._cfg, now):
+                continue
+            new_price = markdown_price(holding, self._cfg)
+            order = self._listing_order_for(holding)
+            out = executor.markdown_listing(order, new_price)
+            results.append({
+                "nft": holding.nft,
+                "name": holding.name,
+                "old_price_usd": round(holding.list_price_usd or 0.0, 2),
+                "new_price_usd": round(new_price, 2),
+                "status": out.status.value,
+                "detail": out.detail,
+            })
+        return results
+
+    def _run_accept_offer_pass(self, executor: Executor) -> list[dict[str, Any]]:
+        """Accept the best incoming bid on cards parked at the cost floor.
+
+        Selecting the due holdings is pure/safe; reading the actual incoming
+        offers (``getCardOffers``) and the accept call are the live, still-
+        unverified steps, so the executor accept is a safe no-op until
+        Etappe 8. The pass therefore surfaces *which* holdings are ready to
+        accept without reading or interpreting any assumed offer shape yet.
+        """
+        if not isinstance(executor, LiveExecutor):
+            return []
+        delay_sec = max(0.0, self._cfg.markdown_delay_days) * SECONDS_PER_DAY
+        try:
+            due = self._store.holdings_due_for_offer_accept(  # type: ignore[union-attr]
+                min_listed_age_sec=delay_sec)
+        except Exception as exc:  # noqa: BLE001
+            return [{"error": f"could not load offer-accept candidates: {exc}"}]
+        now = time.time()
+        results: list[dict[str, Any]] = []
+        for holding in due:
+            if not is_due_for_offer_accept(holding, self._cfg, now):
+                continue
+            order = self._listing_order_for(holding)
+            out = executor.accept_offer(order, "")
+            results.append({
+                "nft": holding.nft,
+                "name": holding.name,
+                "status": out.status.value,
+                "detail": out.detail,
+            })
+        return results
+
+    def _run_market_recheck(self) -> dict[str, Any]:
+        """Read-only market-value re-check for held cards (feature 5b).
+
+        The *source* of a single owned NFT's current market value is still an
+        open decision (holdings-lifecycle-plan §9) and unverified, so this pass
+        does not fetch or mutate anything yet. It is wired here (and runs even
+        while halted, being read-only) so Etappe 8 only has to plug the verified
+        source in.
+        """
+        return {
+            "checked": 0,
+            "note": "market-value source pending (ETAPPE 8 / plan §9)",
+        }
+
+    def _listing_order_for(self, holding: Holding) -> Order:
+        """Build a transient ``LIST`` order describing a held card's listing.
+
+        Used as the subject of the markdown/accept maintenance actions. It is a
+        real (non-simulated) order so the live executor treats it correctly, but
+        it is never persisted by these passes (the executor actions are safe
+        no-ops until Etappe 8).
+        """
+        price = holding.list_price_usd or holding.market_usd_at_buy
+        return Order(
+            kind=OrderKind.LIST,
+            nft=holding.nft,
+            name=holding.name,
+            category=holding.category,
+            price_usd=float(price),
+            market_usd=float(holding.market_usd_at_buy),
+            resell_usd=float(price),
+            simulated=False,
+        )
 
     def _persist_cycle(self, cycle_id: str, report: dict[str, Any],
                        orders: list[Order]) -> None:

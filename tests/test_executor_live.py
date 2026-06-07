@@ -441,6 +441,92 @@ def test_holdings_write_failure_does_not_abort_buy(store, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Maintenance (ETAPPE 6)
+# --------------------------------------------------------------------------- #
+# DryRunExecutor simulates the transitions; LiveExecutor is safe-failure
+# (no client call, no money, order untouched) until ETAPPE 8 verifies shapes.
+def _open_offer(nft="N", price=8.0, market=20.0, bump_count=0):
+    o = make_offer(nft=nft, price_usd=price, market_usd=market, cycle_id="c")
+    o.bump_count = bump_count
+    o.transition(OrderStatus.OPEN)
+    return o
+
+
+def test_dryrun_bump_offer_raises_price_and_count():
+    o = _open_offer(price=8.0, bump_count=1)
+    out = DryRunExecutor().bump_offer(o, 8.10, now=1000.0)
+    assert out.price_usd == 8.10
+    assert out.bump_count == 2
+    assert out.last_bump_at == 1000.0
+    assert out.status is OrderStatus.OPEN
+
+
+def test_dryrun_cancel_offer_cancels():
+    o = _open_offer()
+    out = DryRunExecutor().cancel_offer(o)
+    assert out.status is OrderStatus.CANCELLED
+
+
+def test_dryrun_markdown_listing_lowers_price():
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c", simulated=True)
+    out = DryRunExecutor().markdown_listing(lst, 23.0)
+    assert out.price_usd == 23.0
+    assert out.status is OrderStatus.PLANNED  # price edit, no state change
+
+
+def test_dryrun_accept_offer_confirms():
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c", simulated=True)
+    out = DryRunExecutor().accept_offer(lst, "OFFER1")
+    assert out.status is OrderStatus.CONFIRMED
+
+
+def test_live_bump_offer_is_safe_noop():
+    client = FakeClient()
+    executor = make_live(client=client)
+    o = _open_offer(price=8.0)
+    out = executor.bump_offer(o, 8.10)
+    assert out.status is OrderStatus.OPEN     # untouched
+    assert out.price_usd == 8.0               # no bump applied
+    assert client.calls == []                 # no client call
+    assert "not verified" in out.detail
+
+
+def test_live_cancel_offer_is_safe_noop():
+    client = FakeClient()
+    executor = make_live(client=client)
+    o = _open_offer()
+    out = executor.cancel_offer(o)
+    assert out.status is OrderStatus.OPEN     # not cancelled live yet
+    assert client.calls == []
+
+
+def test_live_markdown_listing_is_safe_noop():
+    client = FakeClient()
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.markdown_listing(lst, 23.0)
+    assert out.price_usd == 25.0              # unchanged
+    assert client.calls == []
+
+
+def test_live_accept_offer_is_safe_noop():
+    client = FakeClient()
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.accept_offer(lst, "OFFER1")
+    assert out.status is OrderStatus.PLANNED  # untouched
+    assert client.calls == []
+
+
+def test_live_maintenance_moves_no_money():
+    client = FakeClient()
+    executor = make_live(client=client, volume=100.0)
+    executor.bump_offer(_open_offer(price=8.0), 8.10)
+    executor.accept_offer(make_list(nft="N", price_usd=25.0, cycle_id="c"), "O")
+    assert executor._remaining == 100.0       # budget never touched
+
+
+# --------------------------------------------------------------------------- #
 # DryRunExecutor (no side effects)
 # --------------------------------------------------------------------------- #
 def test_dryrun_buy_confirms_and_relists():

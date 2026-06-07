@@ -612,6 +612,50 @@ The cycle report gains `status_sync` (the `StatusSyncReport`: counts of
 - Whether listing requires a prior `calcListingFee` call or extra parameters
   (royalty, expiry) in the `marketplace/list` body.
 
+### Holdings maintenance passes (holdings-lifecycle plan E6)
+
+At the end of every **live** cycle (after the status sync + exit pass, never in
+dry-run/demo, and skipped while the kill switch is tripped — except the
+read-only re-check) the engine runs the offer-penetration and floor passes over
+the persisted holdings/orders. Each pass selects its candidates with the pure
+logic in [collectorcrypt/trader/holdings.py](../collectorcrypt/trader/holdings.py)
+and then asks the executor to act:
+
+- **Offer bump** — aged open offers (`should_bump`) are re-priced up by
+  `TRADER_OFFER_BUMP_USD` to re-trigger the owner notification.
+- **Offer cancel** — offers that exhausted their bumps (`should_cancel_offer`)
+  are withdrawn so escrow refunds.
+- **Listing markdown** — listed-but-unsold cards (`is_due_for_markdown`) step
+  toward the cost-basis floor.
+- **Offer accept** — cards parked at the floor long enough
+  (`is_due_for_offer_accept`) become eligible to accept the best incoming bid.
+- **Market re-check** — a read-only inventory stub (runs even while halted); the
+  per-NFT market-value *source* is an open decision (plan §9) and not wired yet.
+
+The cycle report gains `bumped`, `cancelled`, `marked_down`, `offers_accepted`
+and `market_recheck`.
+
+> **Safe-failure (no money moved).** On the `LiveExecutor` all four
+> state-changing maintenance actions (`bump_offer`, `cancel_offer`,
+> `markdown_listing`, `accept_offer`) are **no-ops** that leave the order
+> untouched and call nothing — their detail reads
+> `… skipped: live shape not verified (ETAPPE 8)`. The `DryRunExecutor`
+> simulates the transitions for the report. The passes therefore surface
+> *which* offers/holdings are due without sending anything until Etappe 8
+> verifies the shapes against a funded wallet.
+
+The supporting client methods are **ASSUMED / unverified** seams in
+[collectorcrypt/trader/ccapi.py](../collectorcrypt/trader/ccapi.py):
+
+| Method | Endpoint | Kind | Body (assumed) | Notes |
+|--------|----------|------|----------------|-------|
+| `get_card_offers(nft)` | RPC `getCardOffers` | read (retryable) | `{nftAddress}` | list incoming bids for a held card |
+| `update_listing(nft, price)` | `marketplace/update-listing` | write (non-retryable) | `{nftAddress, price, currency}` | re-price a live listing (markdown / bump-equivalent) |
+| `accept_offer(offer_id, nft)` | `marketplace/accept-offer` | write (non-retryable) | `{id, nftAddress?}` | accept a specific incoming bid |
+
+Reads are idempotent and retry on 429/5xx/network; the two writes are never
+auto-retried (no double-accept / double-update).
+
 ### Risk engine / limits (ETAPPE 7)
 
 The risk engine

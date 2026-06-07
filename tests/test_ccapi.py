@@ -225,6 +225,66 @@ def test_cancel_offer_body():
     assert http.calls[0]["json"] == {"id": "O1"}
 
 
+def test_update_listing_body():
+    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
+    client.update_listing(nft="NFT", price=15.0)
+    assert http.calls[0]["url"].endswith("marketplace/update-listing")
+    assert http.calls[0]["json"] == {"nftAddress": "NFT", "price": 15.0,
+                                     "currency": "USDC"}
+
+
+def test_accept_offer_body():
+    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
+    client.accept_offer(offer_id="O1", nft="NFT")
+    assert http.calls[0]["url"].endswith("marketplace/accept-offer")
+    assert http.calls[0]["json"] == {"id": "O1", "nftAddress": "NFT"}
+
+
+def test_accept_offer_body_without_nft():
+    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
+    client.accept_offer(offer_id="O1")
+    assert http.calls[0]["json"] == {"id": "O1"}
+
+
+def test_get_card_offers_uses_rpc_v2():
+    client, http = make_client([FakeResponse(200, {"offers": []})])
+    client.get_card_offers(nft="N1")
+    assert http.calls[0]["url"].endswith("/v2")
+    assert http.calls[0]["json"] == {"method": "getCardOffers",
+                                     "params": {"nftAddress": "N1"}}
+
+
+def test_get_card_offers_retries_as_read(monkeypatch):
+    # A read RPC is idempotent -> retried on a transient 5xx then succeeds.
+    client, http = make_client([
+        FakeResponse(503, {"error": "busy"}),
+        FakeResponse(200, {"offers": [{"id": "O1"}]}),
+    ])
+    assert client.get_card_offers(nft="N") == {"offers": [{"id": "O1"}]}
+    assert len(http.calls) == 2
+
+
+def test_accept_offer_not_retried(monkeypatch):
+    # A state-changing write is never auto-retried (no double-accept).
+    client, http = make_client([
+        FakeResponse(503, {"error": "busy"}),
+        FakeResponse(200, {"transaction": "tx"}),
+    ])
+    with pytest.raises(CCServerError):
+        client.accept_offer(offer_id="O1")
+    assert len(http.calls) == 1
+
+
+def test_update_listing_not_retried(monkeypatch):
+    client, http = make_client([
+        FakeResponse(503, {"error": "busy"}),
+        FakeResponse(200, {"transaction": "tx"}),
+    ])
+    with pytest.raises(CCServerError):
+        client.update_listing(nft="N", price=10.0)
+    assert len(http.calls) == 1
+
+
 def test_write_extra_merged():
     client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
     client.initiate_buy(nft="N", price=1.0, wallet="W", extra={"slippage": 5})

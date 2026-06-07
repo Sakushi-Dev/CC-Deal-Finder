@@ -83,6 +83,41 @@ class DryRunExecutor:
                 result.append(order)
         return result
 
+    # ------------------------------------------------------------------ #
+    # Maintenance simulations (ETAPPE 6) — order transitions, no side effects
+    # ------------------------------------------------------------------ #
+    # These mirror the live maintenance actions (offer bump/cancel, listing
+    # markdown, offer accept) as pure in-memory transitions so the lifecycle
+    # shapes are testable without any client/wallet/store. The live executor's
+    # equivalents stay safe-failure until ETAPPE 8 verifies the request shapes.
+    def bump_offer(self, order: Order, new_price: float, *,
+                   now: float | None = None) -> Order:
+        """Simulate raising an open offer's bid (offer penetration)."""
+        order.price_usd = float(new_price)
+        order.bump_count += 1
+        order.last_bump_at = time.time() if now is None else float(now)
+        order.detail = "dry-run: bumped offer (no tx sent)"
+        return order
+
+    def cancel_offer(self, order: Order) -> Order:
+        """Simulate cancelling an exhausted offer (escrow would refund)."""
+        order.transition(OrderStatus.CANCELLED,
+                         detail="dry-run: cancelled offer")
+        return order
+
+    def markdown_listing(self, order: Order, new_price: float) -> Order:
+        """Simulate marking down a live listing's price."""
+        order.price_usd = float(new_price)
+        order.detail = "dry-run: marked down listing (no tx sent)"
+        return order
+
+    def accept_offer(self, order: Order, offer_id: str) -> Order:
+        """Simulate accepting an incoming offer (the card sells)."""
+        order.transition(OrderStatus.CONFIRMED,
+                         detail=f"dry-run: accepted offer {offer_id}")
+        return order
+
+
 
 class LiveExecutor:
     """Real on-chain purchases/offers via the CollectorCrypt trading flow.
@@ -250,6 +285,40 @@ class LiveExecutor:
         except Exception as exc:  # noqa: BLE001 - one bad relist must not abort the batch
             self._fail(order, f"unexpected error: {exc}")
             return order
+
+    # ------------------------------------------------------------------ #
+    # Maintenance (ETAPPE 6) — SAFE-FAILURE until ETAPPE 8 verifies the shapes
+    # ------------------------------------------------------------------ #
+    # Offer bump/cancel, listing markdown and offer accept all depend on CC
+    # request shapes that are still ASSUMED (see docs/api.md). Per the project
+    # rule "no assumed shape is wired into the live path", these live methods
+    # do NOT touch the client, sign anything, or move money yet: they leave the
+    # order untouched and report a safe no-op. ETAPPE 8 fills in the real
+    # cancel+resubmit / update-listing / accept-offer flows once captured, using
+    # the DryRunExecutor simulations above as the reference transition shapes.
+    def bump_offer(self, order: Order, new_price: float) -> Order:
+        return self._maintenance_safe_noop(order, "offer bump")
+
+    def cancel_offer(self, order: Order) -> Order:
+        return self._maintenance_safe_noop(order, "offer cancel")
+
+    def markdown_listing(self, order: Order, new_price: float) -> Order:
+        return self._maintenance_safe_noop(order, "listing markdown")
+
+    def accept_offer(self, order: Order, offer_id: str) -> Order:
+        return self._maintenance_safe_noop(order, "offer accept")
+
+    def _maintenance_safe_noop(self, order: Order, action: str) -> Order:
+        """Leave ``order`` untouched; call no client; move no money.
+
+        The single safe-failure path for every live maintenance action while
+        its request shape is unverified. Records an explanatory ``detail`` for
+        the report/UI but performs **no** state transition and **no** spend.
+        """
+        detail = f"{action} skipped: live shape not verified (ETAPPE 8)"
+        order.detail = detail
+        logger.info("Live maintenance no-op: %s (nft=%s)", detail, order.nft)
+        return order
 
     # ------------------------------------------------------------------ #
     # Shared sign + broadcast
