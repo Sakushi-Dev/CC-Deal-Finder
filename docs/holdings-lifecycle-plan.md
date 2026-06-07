@@ -531,8 +531,18 @@ Gated entirely on DevTools captures; **reversible call first**.
      enabled via a raw sign+broadcast helper (a resting `OPEN` offer never passes
      through `SIGNED`). Still pending here: the **reversible escrow offer → bump →
      cancel** test on a cheap real card (tiny supervised amount).
-  2. Capture the **sold/not-sold** signal source (which endpoint authoritatively
-     says a held card sold — drives Features 4 & 5 triggers) and wire the trigger.
+  2. ✅ **DONE (E8.2) — sold/not-sold signal source captured & wired.**
+     DevTools capture (2026-06-07) of `GET cards/{wallet}/` (the owned-cards
+     endpoint) settles §9.3 decision (c): the endpoint lists **only currently
+     owned** cards — there is no per-card `"Sold"` status, so a held card that
+     has sold or been transferred away is simply **absent** from `filterNFtCard`.
+     Absence from the fully-paged owned set is the authoritative exit signal.
+     Wired as a verified `CCApiError`-safe `get_owned_cards` read plus an engine
+     `ownership_sync` pass that runs each live cycle (before the maintenance
+     passes, and even while halted, being read-only): it marks any held holding
+     whose nft has left the wallet `sold` via `record_sold_holding`. Fails safe —
+     a fetch error or incomplete paging marks **nothing** sold. (`oraclePrice`
+     in the same response is the candidate market-value source for step 4.)
   3. Capture `update-listing`, `getCardOffers`, `accept-offer`; enable the markdown
      and offer-accept live paths (LiveExecutor `markdown_listing` / `accept_offer`
      stay safe-failure no-ops until then).

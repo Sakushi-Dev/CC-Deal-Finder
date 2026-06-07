@@ -58,6 +58,7 @@ EP_CANCEL_LISTING = "marketplace/cancel-listing"
 EP_ACCEPT_OFFER = "marketplace/accept-offer"
 EP_BROADCAST = "marketplace/broadcast"     # broadcast a signed tx
 EP_CALC_LISTING_FEE = "calcListingFee"
+EP_USER_CARDS = "cards"                    # VERIFIED 200 -> GET cards/{wallet}/
 RPC_CHECK_LISTING_STATUS = "checkListingStatus"   # VERIFIED 200 (RPC method)
 RPC_GET_CARD_OFFERS = "getCardOffers"             # ASSUMED (RPC read)
 
@@ -188,6 +189,23 @@ class CCTradingClient:
         captured before driving a live accept-offer decision.
         """
         return self._rpc(RPC_GET_CARD_OFFERS, {"nftAddress": nft})
+
+    def get_owned_cards(self, *, wallet: str, page: int = 1, step: int = 96,
+                        order_by: str = "dateDesc") -> dict[str, Any]:
+        """Read a wallet's currently-owned cards. VERIFIED (DevTools 2026-06-07).
+
+        ``GET cards/{wallet}/`` with ``{page, step, orderBy}``. Returns
+        ``{totalCards, totalPages, filterNFtCard:[...], ...}`` where each card
+        carries ``nftAddress``, ``id``, ``listing`` (object|null), ``listedAt``
+        and ``oraclePrice``. The endpoint lists **only cards still owned**: a
+        held card that has sold or been transferred away is simply **absent**
+        (there is no per-card "Sold" status), so absence from this set is the
+        authoritative sold/exited signal. A read, so idempotent and retryable.
+        """
+        return self._request(
+            "GET", f"{EP_USER_CARDS}/{wallet}/", auth=True, idempotent=True,
+            params={"page": page, "step": step, "orderBy": order_by},
+        )
 
     # ------------------------------------------------------------------ #
     # Trading writes (state-changing -> NEVER auto-retried)

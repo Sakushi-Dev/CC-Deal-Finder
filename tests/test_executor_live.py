@@ -21,8 +21,10 @@ from collectorcrypt.trader.executor import (DryRunExecutor, LiveExecutor,
                                             _extract_external_id, _extract_signature,
                                             _extract_tx, _first, _is_cancelled,
                                             _is_confirmed, _is_filled)
+from collectorcrypt.trader.executor import record_sold_holding
 from collectorcrypt.trader.orders import Order, OrderKind, OrderStatus
-from collectorcrypt.trader.store import HOLDING_HELD, HOLDING_LISTED
+from collectorcrypt.trader.store import (HOLDING_HELD, HOLDING_LISTED,
+                                         HOLDING_SOLD, Holding)
 
 from .conftest import (FakeClient, FakeWallet, make_buy, make_config, make_list,
                        make_offer)
@@ -461,6 +463,34 @@ def test_holdings_write_failure_does_not_abort_buy(store, monkeypatch):
                                                    market_usd=20, cycle_id="c")])
              if o.kind is OrderKind.BUY]
     assert buy.status is OrderStatus.CONFIRMED  # the order still settled
+
+
+# --------------------------------------------------------------------------- #
+# Authoritative sold-signal writer (ETAPPE 8.2)
+# --------------------------------------------------------------------------- #
+def test_record_sold_holding_marks_sold(store):
+    store.upsert_holding(Holding(nft="S1", name="Card", category="Pokemon",
+                                 acquired_at=1.0, cost_usd=10.0,
+                                 market_usd_at_buy=20.0, status=HOLDING_HELD))
+    holding = store.get_holding("S1")
+    assert record_sold_holding(store, holding, now=123.0) is True
+    after = store.get_holding("S1")
+    assert after.status == HOLDING_SOLD
+    assert after.sold_at == 123.0
+
+
+def test_record_sold_holding_skips_already_sold(store):
+    store.upsert_holding(Holding(nft="S2", name="Card", category="Pokemon",
+                                 acquired_at=1.0, cost_usd=10.0,
+                                 market_usd_at_buy=20.0, status=HOLDING_SOLD,
+                                 sold_at=50.0))
+    holding = store.get_holding("S2")
+    assert record_sold_holding(store, holding, now=999.0) is False
+    assert store.get_holding("S2").sold_at == 50.0  # unchanged
+
+
+def test_record_sold_holding_guards_none():
+    assert record_sold_holding(None, None) is False
 
 
 # --------------------------------------------------------------------------- #

@@ -21,7 +21,7 @@ from ..normalize import normalize_card
 from .auth import SessionProvider
 from .ccapi import CCApiError, CCTradingClient
 from .config import TraderConfig
-from .executor import DryRunExecutor, Executor, LiveExecutor
+from .executor import DryRunExecutor, Executor, LiveExecutor, record_sold_holding
 from .holdings import (SECONDS_PER_DAY, is_due_for_markdown,
                        is_due_for_offer_accept, markdown_price,
                        next_bump_price, should_bump, should_cancel_offer)
@@ -265,6 +265,11 @@ class TradeEngine:
         # read-only status sync still runs to resolve in-flight state.
         if live and self._store is not None:
             report["status_sync"] = self._run_status_sync()
+            # Authoritative sold-signal: mark holdings sold once they leave the
+            # wallet. Runs before the maintenance passes so a freshly-sold card
+            # is excluded from bump/markdown/accept this same cycle, and even
+            # while halted (it is read-only network + a holdings-only write).
+            report["ownership_sync"] = self._run_ownership_sync()
             halted = bool(risk_decision and risk_decision.halted)
             if halted:
                 report["relisted"] = []
@@ -308,6 +313,74 @@ class TradeEngine:
             return {"error": f"status sync failed: {exc}"}
         except Exception as exc:  # noqa: BLE001 - maintenance must never crash a cycle
             return {"error": f"status sync error: {exc}"}
+
+    def _run_ownership_sync(self) -> dict[str, Any]:
+        """Mark holdings ``sold`` once they leave the wallet (the sold-signal).
+
+        The owned-cards endpoint lists only currently-owned NFTs, so a held
+        card that is **absent** from it has sold (or been transferred away) —
+        there is no per-card "Sold" status to read. This is the authoritative
+        exit signal that stops further bump/markdown/blacklist work on a card.
+
+        Fails safe: it only marks a card sold when the *complete* owned set was
+        fetched confidently (all pages). Any fetch error marks nothing sold and
+        surfaces an ``error`` for the operator. Never signs or spends.
+        """
+        if self._store is None:
+            return {"checked": 0, "sold": []}
+        try:
+            held = self._store.held_cards()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"could not load holdings: {exc}"}
+        if not held:
+            return {"checked": 0, "sold": []}
+        try:
+            owned = self._fetch_owned_nfts()
+        except CCApiError as exc:
+            return {"error": f"owned-cards fetch failed: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"owned-cards error: {exc}"}
+        now = time.time()
+        sold: list[dict[str, Any]] = []
+        for holding in held:
+            if not holding.nft or holding.nft in owned:
+                continue
+            try:
+                record_sold_holding(self._store, holding, now=now)
+            except Exception as exc:  # noqa: BLE001
+                sold.append({"nft": holding.nft, "name": holding.name,
+                             "error": str(exc)})
+                continue
+            sold.append({"nft": holding.nft, "name": holding.name})
+        return {"checked": len(held), "sold": sold}
+
+    def _fetch_owned_nfts(self) -> set[str]:
+        """Build the complete set of NFT addresses the wallet currently owns.
+
+        Pages through every result page so a card on a later page is never
+        mistaken for sold. A hard page cap bounds the loop. Any page error
+        propagates so the caller fails safe (marks nothing sold).
+        """
+        client = CCTradingClient(session_provider=self._session_provider)
+        wallet = self._wallet.address
+        owned: set[str] = set()
+        page = 1
+        max_pages = 50
+        while page <= max_pages:
+            payload = client.get_owned_cards(wallet=wallet, page=page, step=96)
+            cards = payload.get("filterNFtCard") or []
+            for card in cards:
+                nft = str(card.get("nftAddress") or "").strip()
+                if nft:
+                    owned.add(nft)
+            try:
+                total_pages = int(payload.get("totalPages") or 1)
+            except (TypeError, ValueError):
+                total_pages = 1
+            if page >= total_pages:
+                break
+            page += 1
+        return owned
 
     def _run_exit_flow(self, executor: Executor) -> list[dict[str, Any]]:
         """List cards from confirmed buys (the live exit/relisting flow).

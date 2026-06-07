@@ -292,6 +292,13 @@ class FakeClient:
         self._maybe_raise("calc_listing_fee")
         return self.responses.get("calc_listing_fee", {"fee": 0})
 
+    def get_owned_cards(self, *, wallet, page=1, step=96, order_by="dateDesc"):
+        self._record("get_owned_cards", wallet=wallet, page=page, step=step,
+                     order_by=order_by)
+        self._maybe_raise("get_owned_cards")
+        return self.responses.get(
+            "get_owned_cards", {"filterNFtCard": [], "totalPages": 1})
+
 
 @pytest.fixture
 def fake_client() -> FakeClient:

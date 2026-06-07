@@ -520,6 +520,24 @@ transition (only make-offer uses the full SUBMITTED→…→OPEN flow).
    id** — the offer is keyed by `nftAddress` + `wallet`. The old body
    `{ "id": <offer_id> }` was wrong. Response is a bare base64 tx.
 
+#### Owned cards / sold signal (VERIFIED — DevTools capture 2026-06-07)
+
+8. **Owned cards** — ✅ **VERIFIED HTTP 200**
+   `GET cards/{wallet}/?page=1&step=96&orderBy=dateDesc`. Returns
+   `{ totalCards, totalPages, filterNFtCard: [ ...cards ] }`. Each card carries
+   `nftAddress`, `id`, `listing` (object | `null`), `listedAt`, `status`
+   (the on-chain transfer status, e.g. `"Transferred"`) and **`oraclePrice`**
+   (a per-card market value — the candidate source for the §9 market re-check).
+
+   **Sold signal:** the endpoint lists **only cards still owned**. There is no
+   per-card `"Sold"` status — a held card that has sold (or been transferred
+   away) is simply **absent** from `filterNFtCard`. Absence from the fully-paged
+   owned set is therefore the authoritative sold/exited signal, used by the
+   engine's `ownership_sync` pass to mark a holding `sold`. Listed vs held is
+   read from `listing`/`listedAt` (non-null = listed). A read, so it is
+   idempotent and retryable; it fails safe (marks nothing sold) if the owned
+   set cannot be fetched completely.
+
 #### Open / unverified (trading)
 
 - The **listing markdown** body (`marketplace/update-listing`) and **accept-offer**

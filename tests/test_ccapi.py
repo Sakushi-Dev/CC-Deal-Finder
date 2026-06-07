@@ -286,6 +286,32 @@ def test_get_card_offers_retries_as_read(monkeypatch):
     assert len(http.calls) == 2
 
 
+def test_get_owned_cards_path_and_params():
+    client, http = make_client([FakeResponse(200, {"filterNFtCard": []})])
+    client.get_owned_cards(wallet="WALLET1")
+    assert http.calls[0]["method"] == "GET"
+    assert http.calls[0]["url"].endswith("cards/WALLET1/")
+    assert http.calls[0]["params"] == {"page": 1, "step": 96,
+                                       "orderBy": "dateDesc"}
+
+
+def test_get_owned_cards_returns_payload():
+    payload = {"totalCards": 1, "totalPages": 1,
+               "filterNFtCard": [{"nftAddress": "N1", "listing": None}]}
+    client, _ = make_client([FakeResponse(200, payload)])
+    assert client.get_owned_cards(wallet="W") == payload
+
+
+def test_get_owned_cards_retries_as_read():
+    # A read GET is idempotent -> retried on a transient 5xx then succeeds.
+    client, http = make_client([
+        FakeResponse(503, {"error": "busy"}),
+        FakeResponse(200, {"filterNFtCard": []}),
+    ])
+    assert client.get_owned_cards(wallet="W") == {"filterNFtCard": []}
+    assert len(http.calls) == 2
+
+
 def test_accept_offer_not_retried(monkeypatch):
     # A state-changing write is never auto-retried (no double-accept).
     client, http = make_client([

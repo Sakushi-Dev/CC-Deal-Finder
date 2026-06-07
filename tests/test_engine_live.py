@@ -347,8 +347,91 @@ def test_halted_cycle_empties_send_passes_but_keeps_recheck(store):
 
 
 # --------------------------------------------------------------------------- #
-# Acquisition gates (ETAPPE 4): min-operate, blacklist sourcing filter
+# Ownership sync (ETAPPE 8.2): authoritative sold-signal via owned-cards
 # --------------------------------------------------------------------------- #
+def _seed_held(store, *, nft, name="Card"):
+    store.upsert_holding(Holding(nft=nft, name=name, category="Pokemon",
+                                 acquired_at=1.0, cost_usd=10.0,
+                                 market_usd_at_buy=20.0, status="held"))
+
+
+def test_live_cycle_exposes_ownership_sync_key(store, monkeypatch):
+    fake = FakeClient()
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert "ownership_sync" in report
+
+
+def test_ownership_sync_marks_absent_holding_sold(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {"filterNFtCard": [], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="GONE")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["ownership_sync"]["checked"] == 1
+    assert [s["nft"] for s in report["ownership_sync"]["sold"]] == ["GONE"]
+    assert store.get_holding("GONE").status == "sold"
+    assert store.get_holding("GONE").sold_at is not None
+
+
+def test_ownership_sync_keeps_owned_holding(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "KEEP"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="KEEP")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["ownership_sync"]["sold"] == []
+    assert store.get_holding("KEEP").status == "held"
+    assert store.get_holding("KEEP").sold_at is None
+
+
+def test_ownership_sync_fetch_error_marks_nothing_sold(store, monkeypatch):
+    fake = FakeClient()
+    fake.errors["get_owned_cards"] = RuntimeError("api down")
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="SAFE")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert "error" in report["ownership_sync"]
+    # Fail-safe: an unreadable owned set never marks a card sold.
+    assert store.get_holding("SAFE").status == "held"
+    assert store.get_holding("SAFE").sold_at is None
+
+
+def test_fetch_owned_nfts_paginates_all_pages(store, monkeypatch):
+    class _PagedClient:
+        def __init__(self):
+            self.pages = {
+                1: {"filterNFtCard": [{"nftAddress": "A"}], "totalPages": 2},
+                2: {"filterNFtCard": [{"nftAddress": "B"}], "totalPages": 2},
+            }
+            self.calls = 0
+
+        def get_owned_cards(self, *, wallet, page=1, step=96,
+                            order_by="dateDesc"):
+            self.calls += 1
+            return self.pages[page]
+
+    paged = _PagedClient()
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: paged)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    owned = engine._fetch_owned_nfts()
+    assert owned == {"A", "B"}
+    assert paged.calls == 2  # both pages fetched, page-2 card not lost
 def _raw_card(nft, *, price="10", insured=100, category="Pokemon",
               marketplace="CC"):
     """A raw CC API card that normalizes into a qualifying listing."""

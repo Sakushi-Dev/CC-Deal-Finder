@@ -739,3 +739,22 @@ def record_sold(store: Any, order: Order, *,
     holding.status = HOLDING_SOLD
     store.upsert_holding(holding)
     return True
+
+
+def record_sold_holding(store: Any, holding: Any, *,
+                        now: float | None = None) -> bool:
+    """Mark a known holding ``sold`` from the authoritative ownership reconcile.
+
+    Unlike :func:`record_sold` (which keys off a confirming ``LIST`` order),
+    this takes the holding directly — used when the owned-cards endpoint shows
+    the NFT has left the wallet (sold or transferred away). Idempotent: skips a
+    holding that is already sold or missing its nft.
+    """
+    if store is None or holding is None or not holding.nft:
+        return False
+    if holding.sold_at is not None:
+        return False
+    holding.sold_at = time.time() if now is None else float(now)
+    holding.status = HOLDING_SOLD
+    store.upsert_holding(holding)
+    return True
