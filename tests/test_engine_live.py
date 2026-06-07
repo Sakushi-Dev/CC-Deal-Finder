@@ -19,6 +19,7 @@ from collectorcrypt.trader.engine import (TradeEngine, _config_snapshot,
                                           _order_states)
 from collectorcrypt.trader.executor import DryRunExecutor, LiveExecutor
 from collectorcrypt.trader.orders import OrderKind, OrderStatus
+from collectorcrypt.trader.store import Holding
 
 from .conftest import (FakeSessionProvider, FakeWallet, make_buy, make_config,
                        make_list, new_keypair, keypair_secret)
@@ -248,6 +249,128 @@ def test_live_cycle_exit_flow_lists_relist_candidate(store):
     report = engine.run_cycle()
     assert len(report["relisted"]) == 1
     assert report["relisted"][0]["nft"] == "R"
+
+
+# --------------------------------------------------------------------------- #
+# Acquisition gates (ETAPPE 4): min-operate, blacklist sourcing filter
+# --------------------------------------------------------------------------- #
+def _raw_card(nft, *, price="10", insured=100, category="Pokemon",
+              marketplace="CC"):
+    """A raw CC API card that normalizes into a qualifying listing."""
+    return {
+        "itemName": f"Card {nft}",
+        "nftAddress": nft,
+        "category": category,
+        "insuredValue": insured,
+        "listing": {"price": price, "currency": "USDC",
+                    "marketplace": marketplace},
+    }
+
+
+def _source_with(*cards):
+    return FakeSourceClient(pages={1: {"filterNFtCard": list(cards),
+                                       "totalPages": 1}})
+
+
+class _LowVolumeWallet(FakeWallet):
+    """A signing wallet whose USDC balance sits below the min-operate floor."""
+
+    def usdc_balance(self) -> float:
+        return 50.0
+
+
+def test_min_operate_gate_pauses_acquisition():
+    cfg = make_config(min_operate_usd=100.0)  # dry-run
+    engine = make_engine(cfg, wallet=_LowVolumeWallet(can_sign=True),
+                        source=_source_with(_raw_card("A")))
+    report = engine.run_cycle()  # available 50 < min 100
+    assert report["acquisition_paused"] is True
+    assert "paused" in report["pause_reason"]
+    assert report["scanned"] == 0       # sourcing skipped entirely
+    assert report["candidates"] == 0
+    assert report["planned_buys"] == 0
+    assert report["planned_offers"] == 0
+
+
+def test_min_operate_gate_allows_when_above_floor():
+    cfg = make_config(min_operate_usd=10.0)  # 1000 available >= 10
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True),
+                        source=_source_with(_raw_card("A")))
+    report = engine.run_cycle()
+    assert "acquisition_paused" not in report
+    assert report["candidates"] == 1
+
+
+def test_min_operate_gate_disabled_when_zero():
+    cfg = make_config(min_operate_usd=0.0)
+    engine = make_engine(cfg, wallet=_LowVolumeWallet(can_sign=True),
+                        source=_source_with(_raw_card("A")))
+    report = engine.run_cycle()  # 50 available, but gate off
+    assert "acquisition_paused" not in report
+    assert report["candidates"] == 1
+
+
+def test_min_operate_gate_exempts_demo():
+    cfg = make_config(min_operate_usd=1000.0)
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True),
+                        source=_source_with(_raw_card("A")))
+    report = engine.run_cycle(sim_volume=5.0)  # tiny demo volume
+    assert "acquisition_paused" not in report  # demo never pauses
+
+
+def test_min_operate_pause_keeps_maintenance(store):
+    # A paused live cycle still reconciles in-flight orders (read-only).
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      min_operate_usd=100.0)
+    engine = make_engine(cfg, wallet=_LowVolumeWallet(can_sign=True),
+                        store=store, source=_source_with(_raw_card("A")))
+    report = engine.run_cycle()
+    assert report["acquisition_paused"] is True
+    assert "status_sync" in report      # maintenance still runs
+    assert "relisted" in report
+
+
+def test_blacklist_filters_sourcing(store):
+    # Seed a held, blacklisted holding; its NFT must vanish from sourcing.
+    store.upsert_holding(Holding(nft="A", name="Card A", category="Pokemon",
+                                 acquired_at=1.0, cost_usd=5.0,
+                                 market_usd_at_buy=100.0, status="held"))
+    store.mark_blacklisted("A")
+    engine = make_engine(make_config(), wallet=FakeWallet(can_sign=True),
+                        store=store,
+                        source=_source_with(_raw_card("A"), _raw_card("B")))
+    report = engine.run_cycle()
+    nfts = {c["nft"] for c in report["items"]}
+    assert "A" not in nfts          # blacklisted dropped from buys
+    assert "B" in nfts              # other card still sourced
+    # Blacklist also covers the offer pool, not just direct buys.
+    assert "A" not in {o["nft"] for o in report["offers"]}
+
+
+def test_blacklist_empty_when_no_store():
+    # No store -> empty blacklist -> nothing filtered (best-effort).
+    engine = make_engine(make_config(), wallet=FakeWallet(can_sign=True),
+                        source=_source_with(_raw_card("A")))
+    report = engine.run_cycle()
+    assert report["candidates"] == 1
+
+
+def test_max_owned_cap_blocks_surplus_buy_live(store):
+    # One confirmed buy already owned; cap of 1 blocks the new buy.
+    store.upsert_holding(Holding(nft="OWNED", name="Owned", category="Pokemon",
+                                 acquired_at=1.0, cost_usd=5.0,
+                                 market_usd_at_buy=100.0, status="held"))
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      max_owned_cards=1, direct_buy_pct=100.0, offer_pct=0.0)
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store,
+                        source=_source_with(_raw_card("NEW")))
+    report = engine.run_cycle()
+    assert report["risk"]["limits"]["max_owned_cards"] == 1
+    assert report["risk"]["usage"]["owned_cards"] == 1
+    # The new buy is risk-blocked (failed), not executed.
+    new = [o for o in report["executed"] if o["nft"] == "NEW"]
+    assert new and new[0]["status"] == "failed"
+    assert "max owned cards" in new[0]["detail"]
 
 
 # --------------------------------------------------------------------------- #

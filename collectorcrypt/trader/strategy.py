@@ -150,13 +150,21 @@ def _economics(card: dict[str, Any], sol_rate: float,
 
 
 def make_candidates(cards: list[dict[str, Any]], sol_rate: float,
-                    cfg: TraderConfig) -> list[Candidate]:
-    """Filter normalized cards down to qualifying **direct-buy** candidates."""
+                    cfg: TraderConfig,
+                    blacklist: set[str] | None = None) -> list[Candidate]:
+    """Filter normalized cards down to qualifying **direct-buy** candidates.
+
+    ``blacklist`` is the set of NFT addresses flagged unpopular (Feature 4); any
+    card in it is dropped so the bot never re-acquires a card it already
+    struggled to sell.
+    """
     allowed = {m.upper() for m in cfg.allowed_marketplaces}
     out: list[Candidate] = []
     for card in cards:
         cand = _economics(card, sol_rate, allowed)
         if cand is None:
+            continue
+        if blacklist and cand.nft in blacklist:
             continue
         if cand.discount_pct < cfg.min_discount_pct:
             continue
@@ -165,7 +173,8 @@ def make_candidates(cards: list[dict[str, Any]], sol_rate: float,
 
 
 def make_offer_candidates(cards: list[dict[str, Any]], sol_rate: float,
-                          cfg: TraderConfig) -> list[Candidate]:
+                          cfg: TraderConfig,
+                          blacklist: set[str] | None = None) -> list[Candidate]:
     """Filter cards down to candidates we may place a **bid** (offer) on.
 
     Offers bid *below* the ask, so a listing need not already meet the minimum
@@ -173,6 +182,9 @@ def make_offer_candidates(cards: list[dict[str, Any]], sol_rate: float,
     value the seller is expecting a profit and is unlikely to accept a lowball
     bid, so listings priced more than ``TRADER_OFFER_MAX_PREMIUM_PCT`` above
     the insured market value are excluded.
+
+    ``blacklist`` (Feature 4) drops unpopular NFTs from the offer pool too, so
+    the unpopular filter covers both buys and bids.
     """
     allowed = {m.upper() for m in cfg.allowed_marketplaces}
     max_ratio = 1.0 + max(0.0, cfg.offer_max_premium_pct) / 100.0
@@ -180,6 +192,8 @@ def make_offer_candidates(cards: list[dict[str, Any]], sol_rate: float,
     for card in cards:
         cand = _economics(card, sol_rate, allowed)
         if cand is None:
+            continue
+        if blacklist and cand.nft in blacklist:
             continue
         if cand.ask_usd > cand.market_usd * max_ratio:
             continue

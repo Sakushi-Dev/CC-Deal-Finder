@@ -97,6 +97,21 @@ class TradeEngine:
     # ------------------------------------------------------------------ #
     # Sourcing
     # ------------------------------------------------------------------ #
+    def _blacklisted_nfts(self) -> set[str]:
+        """NFT addresses flagged unpopular — never re-acquire (Feature 4).
+
+        Best-effort: an unreadable store (or none) yields an empty set, so the
+        cycle simply does not filter rather than aborting. The blacklist is an
+        acquisition optimization, not a money-safety guard, so failing open here
+        cannot move money — the spend/risk gates still apply.
+        """
+        if self._store is None:
+            return set()
+        try:
+            return set(self._store.blacklisted_nfts())
+        except Exception:  # noqa: BLE001 - sourcing must never crash a cycle
+            return set()
+
     def _collect_listings(self) -> list[dict[str, Any]]:
         """Fetch + normalize listings across the configured categories/pages."""
         from .. import config as app_config
@@ -157,15 +172,41 @@ class TradeEngine:
                 0.0, usdc_balance - max(0.0, self._cfg.reserve_usdc)
             )
 
-        listings = self._collect_listings()
-        candidates = make_candidates(listings, sol_rate, self._cfg)
-        offer_candidates = make_offer_candidates(listings, sol_rate, self._cfg)
-        plan = build_plan(candidates, available_volume, self._cfg,
-                          offer_candidates=offer_candidates)
-        # Always surface the closest deals (qualifying or not) so the UI / demo
-        # can show which hypothetical cards are near the buy threshold.
-        near_misses = diagnose_listings(listings, sol_rate, self._cfg,
-                                        plan.card_cap_usd)
+        # Feature 2 (min-operate gate): on real cycles, if the available volume
+        # is below the operator's configured minimum, pause *acquisition* for
+        # this cycle — source nothing and build no new buys/offers — while still
+        # running inventory maintenance (status sync, exit/relist) below. We keep
+        # managing what we already own and only stop acquiring. This is the
+        # earliest point the real balance is known, so we avoid even fetching
+        # listings we cannot act on. Demo cycles are exempt (hypothetical volume).
+        min_operate = max(0.0, float(self._cfg.min_operate_usd))
+        acquisition_paused = (not demo and min_operate > 0
+                              and available_volume < min_operate)
+        pause_reason = ""
+        if acquisition_paused:
+            pause_reason = (f"paused: volume ${available_volume:.2f} "
+                            f"< min ${min_operate:.2f}")
+            listings: list[dict[str, Any]] = []
+            candidates: list = []
+            offer_candidates: list = []
+            plan = build_plan([], available_volume, self._cfg,
+                              offer_candidates=[])
+            near_misses: list = []
+        else:
+            # Feature 4: drop unpopular (blacklisted) NFTs from sourcing so the
+            # bot never re-acquires a card it already struggled to sell.
+            blacklist = self._blacklisted_nfts()
+            listings = self._collect_listings()
+            candidates = make_candidates(listings, sol_rate, self._cfg,
+                                         blacklist)
+            offer_candidates = make_offer_candidates(listings, sol_rate,
+                                                     self._cfg, blacklist)
+            plan = build_plan(candidates, available_volume, self._cfg,
+                              offer_candidates=offer_candidates)
+            # Always surface the closest deals (qualifying or not) so the UI /
+            # demo can show which hypothetical cards are near the buy threshold.
+            near_misses = diagnose_listings(listings, sol_rate, self._cfg,
+                                            plan.card_cap_usd)
 
         executor = self._build_executor(available_volume, demo=demo)
         live = isinstance(executor, LiveExecutor) and not demo
@@ -206,6 +247,9 @@ class TradeEngine:
                          cycle_id=cycle_id)
         if risk_decision is not None:
             report["risk"] = risk_decision.posture
+        if acquisition_paused:
+            report["acquisition_paused"] = True
+            report["pause_reason"] = pause_reason
 
         # Live maintenance: after placing new buys/offers, (1) reconcile any
         # in-flight orders against CollectorCrypt's authoritative status, then

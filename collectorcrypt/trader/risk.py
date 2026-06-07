@@ -127,6 +127,7 @@ class RiskEngine:
         cycle_spend = 0.0
         open_count = int(usage.get("open_positions", 0))
         day_spend = float(usage.get("spend_today", 0.0))
+        owned_count = int(usage.get("owned_cards", 0))
 
         for order in orders:
             cost = self._order_cost(order)
@@ -137,6 +138,11 @@ class RiskEngine:
                     and open_count + 1 > limits["max_open_positions"]):
                 reason = (f"max open positions reached "
                           f"({limits['max_open_positions']})")
+            elif (limits["max_owned_cards"] > 0
+                    and order.kind is OrderKind.BUY
+                    and owned_count + 1 > limits["max_owned_cards"]):
+                reason = (f"max owned cards reached "
+                          f"({limits['max_owned_cards']})")
             elif (limits["max_spend_per_cycle_usd"] > 0
                     and cycle_spend + cost > limits["max_spend_per_cycle_usd"]):
                 reason = (f"per-cycle spend cap reached "
@@ -156,6 +162,10 @@ class RiskEngine:
                 if order.kind in self._SPEND_KINDS:
                     cycle_spend += cost
                     open_count += 1
+                # Only a direct buy transfers ownership; a resting offer does
+                # not (it becomes owned only once filled, recorded in holdings).
+                if order.kind is OrderKind.BUY:
+                    owned_count += 1
 
         return RiskDecision(
             allowed=allowed, blocked=blocked, halted=False, halt_reason="",
@@ -177,6 +187,8 @@ class RiskEngine:
                 getattr(self._cfg, "max_spend_per_day_usd", 0.0))),
             "max_open_positions": max(0, int(
                 getattr(self._cfg, "max_open_positions", 0))),
+            "max_owned_cards": max(0, int(
+                getattr(self._cfg, "max_owned_cards", 0))),
             "max_consecutive_failures": max(0, int(
                 getattr(self._cfg, "max_consecutive_failures", 0))),
         }
@@ -185,11 +197,12 @@ class RiskEngine:
         """Current usage from the durable store (zeros when no store)."""
         if self._store is None:
             return {"open_positions": 0, "spend_today": 0.0,
-                    "consecutive_failures": 0}
+                    "owned_cards": 0, "consecutive_failures": 0}
         since = time.time() - DAY_SECONDS
         return {
             "open_positions": self._store.open_position_count(),
             "spend_today": self._store.confirmed_spend_since(since),
+            "owned_cards": self._store.confirmed_buy_count(),
             "consecutive_failures": _leading_failures(
                 self._store.recent_terminal_statuses()),
         }
@@ -218,6 +231,7 @@ class RiskEngine:
             limits["max_spend_per_cycle_usd"] > 0,
             limits["max_spend_per_day_usd"] > 0,
             limits["max_open_positions"] > 0,
+            limits["max_owned_cards"] > 0,
             limits["max_consecutive_failures"] > 0,
         ])
         return {
@@ -228,6 +242,7 @@ class RiskEngine:
             "usage": {
                 "open_positions": int(usage.get("open_positions", 0)),
                 "spend_today": round(float(usage.get("spend_today", 0.0)), 2),
+                "owned_cards": int(usage.get("owned_cards", 0)),
                 "consecutive_failures": int(
                     usage.get("consecutive_failures", 0)),
             },
