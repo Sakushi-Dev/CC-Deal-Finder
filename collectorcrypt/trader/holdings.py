@@ -132,6 +132,67 @@ def offer_meets_min_market(offer_usd: float, holding: Holding,
 
 
 # --------------------------------------------------------------------------- #
+# Incoming-offer reconstruction (from the card-activity feed)
+# --------------------------------------------------------------------------- #
+_OFFER_MADE = "Offer Made"
+_OFFER_CLOSED = frozenset({"Offer Cancelled", "Offer Accepted"})
+
+
+@dataclass(frozen=True)
+class IncomingOffer:
+    """The best still-open incoming bid reconstructed from the activity feed."""
+
+    buyer: str
+    amount: float
+
+
+def _to_amount(value: object) -> float | None:
+    try:
+        amount = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return amount if amount > 0 else None
+
+
+def best_active_offer(feed: list[dict]) -> IncomingOffer | None:
+    """Pick the highest still-open incoming bid from a card-activity feed.
+
+    The CollectorCrypt card-activity endpoint returns a chronological log
+    (newest first) that mixes offers, cancellations, accepts and listing edits;
+    there is no standing-offers endpoint and no clean offer id. An offer is
+    *active* only when the bidder's **most recent** offer-related event is an
+    ``"Offer Made"`` that was not later cancelled or accepted.
+
+    The feed is assumed newest-first, so the first offer-related event seen for
+    a given bidder wallet is that wallet's current state. Among wallets whose
+    current state is an open ``"Offer Made"``, the highest ``amount`` wins.
+    Returns ``None`` when no bid is currently open. Pure and side-effect-free.
+    """
+    state: dict[str, float | None] = {}
+    for entry in feed or []:
+        if not isinstance(entry, dict):
+            continue
+        action = entry.get("action")
+        if action != _OFFER_MADE and action not in _OFFER_CLOSED:
+            continue
+        sender = entry.get("from") or {}
+        wallet = str(sender.get("wallet") or "").strip()
+        if not wallet or wallet in state:
+            continue  # already have this wallet's newest offer-event
+        if action == _OFFER_MADE:
+            state[wallet] = _to_amount(entry.get("amount"))
+        else:  # cancelled / accepted -> the wallet has no open offer
+            state[wallet] = None
+    best: IncomingOffer | None = None
+    for wallet, amount in state.items():
+        if amount is None:
+            continue
+        if best is None or amount > best.amount:
+            best = IncomingOffer(buyer=wallet, amount=amount)
+    return best
+
+
+# --------------------------------------------------------------------------- #
 # Unpopular blacklist (feature 4)
 # --------------------------------------------------------------------------- #
 def should_blacklist(holding: Holding, cfg: TraderConfig, now: float) -> bool:

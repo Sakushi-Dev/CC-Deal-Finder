@@ -248,41 +248,44 @@ def test_broadcast_parses_success_and_signature():
 
 
 def test_update_listing_body():
-    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.update_listing(nft="NFT", price=15.0)
+    client, http = make_client([FakeResponse(200, {"data": "tx"})])
+    client.update_listing(nft="NFT", price=15.0, wallet="W1")
     assert http.calls[0]["url"].endswith("marketplace/update-listing")
-    assert http.calls[0]["json"] == {"nftAddress": "NFT", "price": 15.0,
-                                     "currency": "USDC"}
+    assert http.calls[0]["json"] == {"coin": "USDC", "newPrice": 15.0,
+                                     "seller": "W1", "tokenMint": "NFT",
+                                     "wallet": "W1"}
 
 
 def test_accept_offer_body():
-    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.accept_offer(offer_id="O1", nft="NFT")
+    client, http = make_client([FakeResponse(200, {"data": "tx"})])
+    client.accept_offer(nft="NFT", buyer="B1", price=114.7, wallet="W1")
     assert http.calls[0]["url"].endswith("marketplace/accept-offer")
-    assert http.calls[0]["json"] == {"id": "O1", "nftAddress": "NFT"}
+    assert http.calls[0]["json"] == {"buyer": "B1", "currency": "USDC",
+                                     "nftAddress": "NFT", "price": 114.7,
+                                     "wallet": "W1"}
 
 
-def test_accept_offer_body_without_nft():
-    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.accept_offer(offer_id="O1")
-    assert http.calls[0]["json"] == {"id": "O1"}
+def test_get_card_activity_path_and_params():
+    client, http = make_client([FakeResponse(200, [{"action": "Offer Made"}])])
+    client.get_card_activity(nft="N1")
+    assert http.calls[0]["method"] == "GET"
+    assert http.calls[0]["url"].endswith("card-activity/N1")
+    assert http.calls[0]["params"] == {"day": 60, "v2": "true"}
 
 
-def test_get_card_offers_uses_rpc_v2():
-    client, http = make_client([FakeResponse(200, {"offers": []})])
-    client.get_card_offers(nft="N1")
-    assert http.calls[0]["url"].endswith("/v2")
-    assert http.calls[0]["json"] == {"method": "getCardOffers",
-                                     "params": {"nftAddress": "N1"}}
+def test_get_card_activity_wraps_array_as_data():
+    feed = [{"action": "Offer Made", "amount": 10.0}]
+    client, _ = make_client([FakeResponse(200, feed)])
+    assert client.get_card_activity(nft="N") == {"data": feed}
 
 
-def test_get_card_offers_retries_as_read(monkeypatch):
-    # A read RPC is idempotent -> retried on a transient 5xx then succeeds.
+def test_get_card_activity_retries_as_read():
+    # A read GET is idempotent -> retried on a transient 5xx then succeeds.
     client, http = make_client([
         FakeResponse(503, {"error": "busy"}),
-        FakeResponse(200, {"offers": [{"id": "O1"}]}),
+        FakeResponse(200, [{"action": "Offer Made"}]),
     ])
-    assert client.get_card_offers(nft="N") == {"offers": [{"id": "O1"}]}
+    assert client.get_card_activity(nft="N") == {"data": [{"action": "Offer Made"}]}
     assert len(http.calls) == 2
 
 
@@ -316,20 +319,20 @@ def test_accept_offer_not_retried(monkeypatch):
     # A state-changing write is never auto-retried (no double-accept).
     client, http = make_client([
         FakeResponse(503, {"error": "busy"}),
-        FakeResponse(200, {"transaction": "tx"}),
+        FakeResponse(200, {"data": "tx"}),
     ])
     with pytest.raises(CCServerError):
-        client.accept_offer(offer_id="O1")
+        client.accept_offer(nft="N", buyer="B", price=10.0, wallet="W")
     assert len(http.calls) == 1
 
 
 def test_update_listing_not_retried(monkeypatch):
     client, http = make_client([
         FakeResponse(503, {"error": "busy"}),
-        FakeResponse(200, {"transaction": "tx"}),
+        FakeResponse(200, {"data": "tx"}),
     ])
     with pytest.raises(CCServerError):
-        client.update_listing(nft="N", price=10.0)
+        client.update_listing(nft="N", price=10.0, wallet="W")
     assert len(http.calls) == 1
 
 

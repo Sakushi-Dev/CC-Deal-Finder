@@ -259,6 +259,22 @@ class FakeClient:
             "create_listing",
             {"transaction": "UNSIGNED-LIST-TX", "listingId": "lst-1"})
 
+    def update_listing(self, *, nft, price, wallet, currency="USDC",
+                       extra=None):
+        self._record("update_listing", nft=nft, price=price, wallet=wallet,
+                     currency=currency, extra=extra)
+        self._maybe_raise("update_listing")
+        return self.responses.get(
+            "update_listing", {"data": "UNSIGNED-UPDATE-LISTING-TX"})
+
+    def accept_offer(self, *, nft, buyer, price, wallet, currency="USDC",
+                     extra=None):
+        self._record("accept_offer", nft=nft, buyer=buyer, price=price,
+                     wallet=wallet, currency=currency, extra=extra)
+        self._maybe_raise("accept_offer")
+        return self.responses.get(
+            "accept_offer", {"data": "UNSIGNED-ACCEPT-OFFER-TX"})
+
     def broadcast(self, *, signed_tx, wallet="", nft="", extra=None):
         self._record("broadcast", signed_tx=signed_tx, wallet=wallet, nft=nft,
                      extra=extra)
@@ -298,6 +314,11 @@ class FakeClient:
         self._maybe_raise("get_owned_cards")
         return self.responses.get(
             "get_owned_cards", {"filterNFtCard": [], "totalPages": 1})
+
+    def get_card_activity(self, *, nft, day=60):
+        self._record("get_card_activity", nft=nft, day=day)
+        self._maybe_raise("get_card_activity")
+        return self.responses.get("get_card_activity", {"data": []})
 
 
 @pytest.fixture

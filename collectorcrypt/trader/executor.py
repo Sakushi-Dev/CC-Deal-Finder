@@ -111,10 +111,12 @@ class DryRunExecutor:
         order.detail = "dry-run: marked down listing (no tx sent)"
         return order
 
-    def accept_offer(self, order: Order, offer_id: str) -> Order:
+    def accept_offer(self, order: Order, buyer: str, price: float) -> Order:
         """Simulate accepting an incoming offer (the card sells)."""
-        order.transition(OrderStatus.CONFIRMED,
-                         detail=f"dry-run: accepted offer {offer_id}")
+        order.price_usd = float(price)
+        order.transition(
+            OrderStatus.CONFIRMED,
+            detail=f"dry-run: accepted offer of {float(price)} from {buyer}")
         return order
 
 
@@ -296,11 +298,12 @@ class LiveExecutor:
     # ------------------------------------------------------------------ #
     # Maintenance (ETAPPE 6/8)
     # ------------------------------------------------------------------ #
-    # Offer bump/cancel are LIVE (ETAPPE 8): their request shapes are verified
-    # from DevTools captures (update-offer / cancel-offer). Listing markdown and
-    # offer accept stay SAFE-FAILURE because their shapes are still ASSUMED (see
-    # docs/api.md) — per the rule "no assumed shape is wired into the live path",
-    # those leave the order untouched and report a safe no-op until captured.
+    # All four maintenance actions are LIVE (ETAPPE 8): their request shapes are
+    # verified from DevTools captures — offer bump/cancel (update-offer /
+    # cancel-offer) and listing markdown / offer accept (update-listing /
+    # accept-offer). Offer bump/cancel act on a resting OPEN offer (no order
+    # transition); markdown/accept act on a transient LIST order taken straight
+    # to CONFIRMED on success so the engine can persist the result.
     def bump_offer(self, order: Order, new_price: float, *,
                    now: float | None = None) -> Order:
         """Raise an open offer's bid via the verified ``update-offer`` endpoint.
@@ -374,21 +377,83 @@ class LiveExecutor:
         return order
 
     def markdown_listing(self, order: Order, new_price: float) -> Order:
-        return self._maintenance_safe_noop(order, "listing markdown")
+        """Lower a live listing's price via the verified ``update-listing`` call.
 
-    def accept_offer(self, order: Order, offer_id: str) -> Order:
-        return self._maintenance_safe_noop(order, "offer accept")
-
-    def _maintenance_safe_noop(self, order: Order, action: str) -> Order:
-        """Leave ``order`` untouched; call no client; move no money.
-
-        The single safe-failure path for every live maintenance action while
-        its request shape is unverified. Records an explanatory ``detail`` for
-        the report/UI but performs **no** state transition and **no** spend.
+        ``update-listing`` returns a fresh transaction to sign + broadcast that
+        re-prices the existing listing in place. The subject is a transient
+        ``LIST`` order (built by the engine, never persisted by this pass), so
+        on success it is taken straight ``PLANNED -> CONFIRMED`` to signal the
+        markdown settled; the engine then persists the new price on the holding.
+        On any failure the order is left untouched (the listing keeps its old
+        price) for a later attempt. Never raises.
         """
-        detail = f"{action} skipped: live shape not verified (ETAPPE 8)"
-        order.detail = detail
-        logger.info("Live maintenance no-op: %s (nft=%s)", detail, order.nft)
+        if not getattr(self._wallet, "can_sign", False):
+            order.detail = "listing markdown skipped: live executor cannot sign"
+            return order
+        try:
+            resp = self._client.update_listing(
+                nft=order.nft, price=float(new_price),
+                wallet=self._wallet.address,
+                currency=order.currency or "USDC",
+            )
+        except CCApiError as exc:
+            order.detail = f"listing markdown failed: {exc}"
+            logger.info("Live listing markdown failed (nft=%s): %s",
+                        order.nft, exc)
+            return order
+        tx = _extract_tx(resp)
+        if not tx:
+            order.detail = "listing markdown returned no transaction to sign"
+            return order
+        ok, signature = self._raw_sign_broadcast(order, tx,
+                                                 action="listing markdown")
+        if not ok:
+            return order
+        order.price_usd = float(new_price)
+        order.transition(OrderStatus.CONFIRMED,
+                         detail=f"marked down to {order.price_usd}",
+                         signature=signature or order.signature)
+        return order
+
+    def accept_offer(self, order: Order, buyer: str, price: float) -> Order:
+        """Accept an incoming bid via the verified ``accept-offer`` call.
+
+        An offer is referenced by ``buyer`` + ``price`` + ``nftAddress`` (there
+        is no offer id). ``accept-offer`` returns a transaction to sign +
+        broadcast that settles the sale. The subject is a transient ``LIST``
+        order, so on success it is taken ``PLANNED -> CONFIRMED`` to signal the
+        sale settled; the engine then marks the holding sold. A missing/invalid
+        offer or any failure leaves the order untouched. Never raises.
+        """
+        if not getattr(self._wallet, "can_sign", False):
+            order.detail = "offer accept skipped: live executor cannot sign"
+            return order
+        if not buyer or float(price) <= 0:
+            order.detail = "offer accept skipped: no valid incoming offer"
+            return order
+        try:
+            resp = self._client.accept_offer(
+                nft=order.nft, buyer=buyer, price=float(price),
+                wallet=self._wallet.address,
+                currency=order.currency or "USDC",
+            )
+        except CCApiError as exc:
+            order.detail = f"offer accept failed: {exc}"
+            logger.info("Live offer accept failed (nft=%s): %s", order.nft, exc)
+            return order
+        tx = _extract_tx(resp)
+        if not tx:
+            order.detail = "offer accept returned no transaction to sign"
+            return order
+        ok, signature = self._raw_sign_broadcast(order, tx,
+                                                 action="offer accept")
+        if not ok:
+            return order
+        order.price_usd = float(price)
+        order.transition(
+            OrderStatus.CONFIRMED,
+            detail=f"accepted offer of {order.price_usd} from {buyer}",
+            signature=signature or order.signature)
         return order
 
     def _raw_sign_broadcast(self, order: Order, tx: str, *,
@@ -715,6 +780,25 @@ def record_listed(store: Any, order: Order, *,
         return False
     holding.listed_at = time.time() if now is None else float(now)
     holding.list_price_usd = order.price_usd
+    holding.status = HOLDING_LISTED
+    store.upsert_holding(holding)
+    return True
+
+
+def record_markdown(store: Any, holding: Any, new_price: float, *,
+                    now: float | None = None) -> bool:
+    """Persist a confirmed live markdown step on the holding.
+
+    Lowers ``list_price_usd`` to ``new_price``, advances the markdown clock
+    (``last_markdown_at``) and the step counter (``markdown_steps``) so the
+    curve progresses and the inter-step interval is respected. The card stays
+    ``listed``. Best-effort: does nothing when no holding/store is given.
+    """
+    if store is None or holding is None or not holding.nft:
+        return False
+    holding.list_price_usd = float(new_price)
+    holding.markdown_steps = int(holding.markdown_steps or 0) + 1
+    holding.last_markdown_at = time.time() if now is None else float(now)
     holding.status = HOLDING_LISTED
     store.upsert_holding(holding)
     return True

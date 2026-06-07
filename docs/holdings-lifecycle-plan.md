@@ -71,10 +71,10 @@ plan therefore separates **decision logic (buildable now)** from **live executio
 |-------------------|-----------|----------------|-----------------|
 | Edit/raise an existing offer | 1 | ✅ **VERIFIED** (E8.1) — `marketplace/update-offer` `{buyer,currency,nftAddress,price,wallet}` is a real offer edit; make-offer body fixed (`cardId` was the missing field) | Done (DevTools capture 2026-06-07) |
 | Cancel an offer | 1 | ✅ **VERIFIED** (E8.1) — `marketplace/cancel-offer` `{coin,keepInEscrow,nftAddress,wallet}` (no offer id) | Done (DevTools capture 2026-06-07) |
-| Detect "sold / not sold" for a held card | 4, 5 | ❌ `checkListingStatus` returns only `{exists, marketplace, listing}` — no "sold" vocabulary | DevTools capture of the account/holdings or listing-detail endpoint |
-| Change a live listing price (markdown) | 5 | ❌ unverified (re-list / `marketplace/list`) | DevTools capture |
-| Read incoming offers for a held card | 5 | ❌ `getCardOffers` RPC name known, shape unverified | DevTools capture |
-| Accept an offer | 5 | ❌ `marketplace/accept-offer` path known, body unverified; not in `ccapi` yet | DevTools capture |
+| Detect "sold / not sold" for a held card | 4, 5 | ✅ **VERIFIED** (E8.2) — absence from the fully-paged owned-cards set (`cards/{wallet}/`) is the authoritative sold signal | Done (DevTools capture 2026-06-07) |
+| Change a live listing price (markdown) | 5 | ✅ **VERIFIED** (E8.3) — `marketplace/update-listing` `{coin,newPrice,seller,tokenMint,wallet}`; bare base64 tx | Done (DevTools capture 2026-06-07) |
+| Read incoming offers for a held card | 5 | ✅ **VERIFIED** (E8.3) — `GET card-activity/{nft}?day=60&v2=true` feed; best bid via `best_active_offer` | Done (DevTools capture 2026-06-07) |
+| Accept an offer | 5 | ✅ **VERIFIED** (E8.3) — `marketplace/accept-offer` `{buyer,currency,nftAddress,price,wallet}` (no offer id); bare base64 tx | Done (DevTools capture 2026-06-07) |
 | Current market value of a held card | 5b | ✅ **VERIFIED** (E8.4) — per-card `oraclePrice` in the `cards/{wallet}/` owned-cards response | Done (DevTools capture 2026-06-07) |
 
 > **Implication:** Phases 1–3 below are pure logic + persistence + dry-run and can
@@ -242,14 +242,16 @@ so UI-editable; same pattern as existing knobs). All default to the spec values;
     `max(cost_usd, list_price - market_usd_at_buy * TRADER_MARKDOWN_STEP_PCT/100)`.
   - **Floor = `cost_usd`** (0% profit, decision i). Never below cost.
 - **Offer-accept stage (after floor):**
-  - Once at floor for `TRADER_OFFER_ACCEPT_DELAY_DAYS` more (default 3): read incoming
-    offers (`getCardOffers`), pick the **highest**, and accept it **iff** the offer's
-    implied value is **not below** `TRADER_OFFER_ACCEPT_MIN_MARKET_PCT` of the
-    relevant market value (decision k uses the persisted/last-checked market value).
-- **Live seam:** new `CCTradingClient` methods — `update_listing_price` (re-list /
-  edit), `get_card_offers`, `accept_offer` (`marketplace/accept-offer`). All behind
-  the seam; dry-run simulates and is fully tested; live raises safe failure until
-  captured.
+  - Once at floor for `TRADER_OFFER_ACCEPT_DELAY_DAYS` more (default 3): read the
+    card-activity feed (`get_card_activity`), reconstruct the best still-open bid
+    (`best_active_offer`), and accept it **iff** the offer's implied value is
+    **not below** `TRADER_OFFER_ACCEPT_MIN_MARKET_PCT` of the relevant market value
+    (decision k uses the persisted/last-checked market value).
+- **Live seam (E8.3, all VERIFIED & LIVE):** `CCTradingClient` methods —
+  `update_listing` (`marketplace/update-listing`), `get_card_activity`
+  (`GET card-activity/{nft}`), `accept_offer` (`marketplace/accept-offer`). The
+  `LiveExecutor` markdown/accept paths sign + broadcast and fail safe; dry-run
+  simulates and is fully tested.
 
 ### Feature 5b — Market-value re-check (confirmed refinement)
 
@@ -289,7 +291,7 @@ so UI-editable; same pattern as existing knobs). All default to the spec values;
 | `trader/config.py` | 12 new config fields (defaults per §4) |
 | `trader/settings.py` | Matching `EDITABLE_FIELDS` (UI form) |
 | `trader/holdings.py` *(new)* | Pure decision logic: markdown curve, aging, blacklist test, bump test, 5b recheck — all side-effect-free + unit-tested |
-| `trader/ccapi.py` | New seam methods: `edit_offer`/`cancel_offer` (verify), `update_listing_price`, `get_card_offers`, `accept_offer` — non-retryable writes |
+| `trader/ccapi.py` | Seam methods (all VERIFIED): `update_offer`/`cancel_offer`, `update_listing`, `get_card_activity`, `accept_offer` — non-retryable writes + idempotent feed read |
 | `trader/executor.py` | Dry-run + live handlers for bump/cancel/markdown/accept; populate `holdings` on settled buy/offer and on confirmed sale |
 | `trader/engine.py` | New maintenance passes in the live branch; min-operate gate; feed blacklist filter into sourcing |
 | `trader/risk.py` | Max-owned-cards guard |
@@ -462,11 +464,12 @@ on the live path until Etappe 8 verifies the shapes.
 - **Files:** `trader/ccapi.py`, `trader/executor.py`, `trader/engine.py`,
   `tests/test_executor_live.py`, `tests/test_engine_live.py`, `docs/api.md`.
 - **Work:**
-  - **ccapi seam (marked `ASSUMED` in `docs/api.md`):** `cancel_offer` (verify the
-    body), `update_listing(*, nft, price, currency)` (constant `EP_UPDATE_LISTING`
-    already exists), `get_card_offers(*, nft)` (RPC `getCardOffers`, idempotent
-    read), `accept_offer(*, offer_id, nft)` (`marketplace/accept-offer`). All writes
-    stay **non-retryable** (`idempotent=False`).
+  - **ccapi seam (all VERIFIED in `docs/api.md`):** `cancel_offer`,
+    `update_listing(*, nft, price, wallet)` (body `{coin,newPrice,seller,
+    tokenMint,wallet}`), `get_card_activity(*, nft, day)` (`GET card-activity/{nft}`,
+    idempotent read), `accept_offer(*, nft, buyer, price, wallet)`
+    (`marketplace/accept-offer`). All writes stay **non-retryable**
+    (`idempotent=False`).
   - **executor (LiveExecutor) methods**, each following the `_execute_offer` /
     `_sign_and_broadcast` pattern, each persisting after every transition:
     `bump_offer(order, new_price)` = **cancel + re-submit** (CC has no verified
@@ -543,9 +546,20 @@ Gated entirely on DevTools captures; **reversible call first**.
      whose nft has left the wallet `sold` via `record_sold_holding`. Fails safe —
      a fetch error or incomplete paging marks **nothing** sold. (`oraclePrice`
      in the same response is the candidate market-value source for step 4.)
-  3. Capture `update-listing`, `getCardOffers`, `accept-offer`; enable the markdown
-     and offer-accept live paths (LiveExecutor `markdown_listing` / `accept_offer`
-     stay safe-failure no-ops until then).
+  3. ✅ **DONE (E8.3) — listing markdown + offer accept captured & wired LIVE.**
+     DevTools captures (2026-06-07) settle the three remaining trading shapes:
+     `GET card-activity/{nft}?day=60&v2=true` (a newest-first activity feed — the
+     `getCardOffers` RPC name was wrong; there is no standing-offers endpoint and
+     no offer id), `POST marketplace/update-listing`
+     `{coin,newPrice,seller,tokenMint,wallet}`, and `POST marketplace/accept-offer`
+     `{buyer,currency,nftAddress,price,wallet}` (an offer is keyed by
+     buyer+price+nft). All three old assumed bodies were wrong. Wired as: a new
+     pure `best_active_offer` helper that reconstructs the best open bid from the
+     feed; `LiveExecutor.markdown_listing` / `accept_offer` now sign + broadcast
+     (transient `LIST` order → `CONFIRMED`, fail-safe, never retried); the engine
+     markdown pass persists each step (`record_markdown`) and the accept pass
+     reads the feed, applies the min-market-% gate, accepts the best bid and marks
+     the holding sold on settle.
   4. ✅ **DONE (E8.4) — market-value source for held cards wired (5/5b).**
      Settles §9 open item (a): the per-card `oraclePrice` (a string such as
      `"60.92"`) in the already-verified `GET cards/{wallet}/` owned-cards

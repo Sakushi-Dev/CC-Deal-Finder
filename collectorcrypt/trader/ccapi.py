@@ -59,8 +59,8 @@ EP_ACCEPT_OFFER = "marketplace/accept-offer"
 EP_BROADCAST = "marketplace/broadcast"     # broadcast a signed tx
 EP_CALC_LISTING_FEE = "calcListingFee"
 EP_USER_CARDS = "cards"                    # VERIFIED 200 -> GET cards/{wallet}/
+EP_CARD_ACTIVITY = "card-activity"         # VERIFIED 200 -> GET card-activity/{nft}
 RPC_CHECK_LISTING_STATUS = "checkListingStatus"   # VERIFIED 200 (RPC method)
-RPC_GET_CARD_OFFERS = "getCardOffers"             # ASSUMED (RPC read)
 
 
 # --------------------------------------------------------------------------- #
@@ -180,15 +180,21 @@ class CCTradingClient:
             params={"nftAddress": nft, "price": price, "currency": currency},
         )
 
-    def get_card_offers(self, *, nft: str) -> dict[str, Any]:
-        """Read the standing offers (bids) on a card. ASSUMED (RPC read).
+    def get_card_activity(self, *, nft: str, day: int = 60) -> dict[str, Any]:
+        """Read a card's recent on-chain activity feed. VERIFIED (DevTools 2026-06-07).
 
-        RPC call: ``POST /v2`` with ``{method:"getCardOffers", params:{nftAddress}}``.
-        A read, so it is idempotent and retryable; the response shape is
-        reverse-engineered (the RPC name is known from the bundle) and must be
-        captured before driving a live accept-offer decision.
+        ``GET card-activity/{nft}`` with ``{day, v2}``. Returns a flat,
+        newest-first activity log (offers made/cancelled/accepted, listings,
+        listing updates), wrapped by the transport as ``{"data": [...]}`` since
+        the raw body is a bare JSON array. There is no standing-offers endpoint
+        and no clean offer id: the current best incoming bid is reconstructed
+        from this feed by :func:`collectorcrypt.trader.holdings.best_active_offer`.
+        A read, so it is idempotent and retryable.
         """
-        return self._rpc(RPC_GET_CARD_OFFERS, {"nftAddress": nft})
+        return self._request(
+            "GET", f"{EP_CARD_ACTIVITY}/{nft}", auth=True, idempotent=True,
+            params={"day": day, "v2": "true"},
+        )
 
     def get_owned_cards(self, *, wallet: str, page: int = 1, step: int = 96,
                         order_by: str = "dateDesc") -> dict[str, Any]:
@@ -322,36 +328,48 @@ class CCTradingClient:
             body.update(extra)
         return self._request("POST", EP_CANCEL_OFFER, auth=True, json=body)
 
-    def update_listing(self, *, nft: str, price: float, currency: str = "USDC",
+    def update_listing(self, *, nft: str, price: float, wallet: str,
+                       currency: str = "USDC",
                        extra: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Change the price of a live listing (markdown). ASSUMED.
+        """Change the price of a live listing (markdown). VERIFIED (DevTools 2026-06-07).
 
         ``POST marketplace/update-listing`` with
-        ``{nftAddress, price, currency}`` — mirrors ``create_listing`` but edits
-        an existing listing in place. Returns a tx to sign. State-changing, so
-        it is never auto-retried; the body is reverse-engineered (path confirmed
-        from the bundle map, body not yet probed) and must not drive a live
-        markdown until verified.
+        ``{coin, newPrice, seller, tokenMint, wallet}`` — ``seller`` and
+        ``wallet`` are both our own address. Returns a **bare base64
+        ``VersionedTransaction`` string** to sign locally and broadcast via
+        :meth:`broadcast`. State-changing, so it is never auto-retried.
         """
-        body: dict[str, Any] = {"nftAddress": nft, "price": price,
-                                "currency": currency}
+        body: dict[str, Any] = {
+            "coin": currency,
+            "newPrice": price,
+            "seller": wallet,
+            "tokenMint": nft,
+            "wallet": wallet,
+        }
         if extra:
             body.update(extra)
         return self._request("POST", EP_UPDATE_LISTING, auth=True, json=body)
 
-    def accept_offer(self, *, offer_id: str, nft: str = "",
+    def accept_offer(self, *, nft: str, buyer: str, price: float, wallet: str,
+                     currency: str = "USDC",
                      extra: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Accept a standing offer (bid) on an owned card. ASSUMED.
+        """Accept an incoming bid on an owned card. VERIFIED (DevTools 2026-06-07).
 
-        ``POST marketplace/accept-offer`` with ``{id, nftAddress?}``. Returns a
-        tx to sign that settles the sale. State-changing, so it is never
-        auto-retried; the body is reverse-engineered (path confirmed from the
-        bundle map, body not yet probed) and must not drive a live accept until
-        verified.
+        ``POST marketplace/accept-offer`` with
+        ``{buyer, currency, nftAddress, price, wallet}``. An offer is referenced
+        by ``buyer`` + ``price`` + ``nftAddress`` (there is no offer id);
+        ``wallet`` is our own (seller) address. Returns a **bare base64
+        ``VersionedTransaction`` string** to sign locally and broadcast via
+        :meth:`broadcast` to settle the sale. State-changing, so it is never
+        auto-retried.
         """
-        body: dict[str, Any] = {"id": offer_id}
-        if nft:
-            body["nftAddress"] = nft
+        body: dict[str, Any] = {
+            "buyer": buyer,
+            "currency": currency,
+            "nftAddress": nft,
+            "price": price,
+            "wallet": wallet,
+        }
         if extra:
             body.update(extra)
         return self._request("POST", EP_ACCEPT_OFFER, auth=True, json=body)

@@ -34,9 +34,9 @@ CollectorCrypt / Privy API and the request **and** response were inspected.
 | `cancel-listing` body | [ ] | Path known, body unverified |
 | `sign_transaction` (base64 + v0, sole signer) | [~] | Plausible; only provable via a real signed broadcast |
 | Status-sync vocabulary (confirmed/cancelled) | [~] | `checkListingStatus` lacks status words → sync stays failure-safe |
-| `update-listing` body (markdown / price change) | [ ] | Holdings plan Etappe 8; path known, body unverified |
-| `getCardOffers` (incoming offers on a held card) | [ ] | Holdings plan Etappe 8; RPC name known, shape unverified |
-| `accept-offer` body | [ ] | Holdings plan Etappe 8; path known, body unverified |
+| `update-listing` body (markdown / price change) | [x] | DevTools capture 2026-06-07 (E8.3): `{coin,newPrice,seller,tokenMint,wallet}` — bare base64 tx |
+| `card-activity` feed (incoming offers on a held card) | [x] | DevTools capture 2026-06-07 (E8.3): `GET card-activity/{nft}?day=60&v2=true` newest-first feed; best bid via `best_active_offer` (no offer id) |
+| `accept-offer` body | [x] | DevTools capture 2026-06-07 (E8.3): `{buyer,currency,nftAddress,price,wallet}` (keyed by buyer+price+nft) — bare base64 tx |
 | Authoritative "sold" signal for a held card | [x] | DevTools capture 2026-06-07: `GET cards/{wallet}/` lists only owned cards — absence from the fully-paged owned set = sold/exited (no per-card status). Wired as `ownership_sync`. |
 | Current market value of a single owned NFT | [x] | `oraclePrice` per card in the `cards/{wallet}/` response, wired into `_run_market_recheck` (E8.4) |
 
@@ -78,9 +78,9 @@ reversible action** from the browser, then mirror it in code.
       optional expiry, and the exact response envelope.
 - [ ] **Post-buy lifecycle shapes** (for the holdings features — capture when a
       held card is available, see [holdings-lifecycle-plan.md](holdings-lifecycle-plan.md)
-      Etappe 8): `update-listing` (price change / markdown), `getCardOffers`
-      (incoming bids), `accept-offer`, and whichever endpoint authoritatively
-      reports a held card as **sold**.
+      Etappe 8): `update-listing` (price change / markdown) ✅, `card-activity`
+      (incoming bids) ✅, `accept-offer` ✅ — all captured & wired in E8.3 — and the
+      owned-cards endpoint that authoritatively reports a held card as **sold** ✅.
 
 **Why an offer first:** offers sit in escrow and are refundable via cancel, so
 this is a fully **reversible** live test — unlike a buy, which settles instantly.

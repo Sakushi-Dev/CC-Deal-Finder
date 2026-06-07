@@ -49,6 +49,8 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
 
 # Project-specific caches / outputs
 .cache/
@@ -57,5 +59,7 @@ data/
 output/
 *.bak
 
-# Live API probe output (may contain account-specific data; regenerate locally)
+# Live API probe output + DevTools captures (contain real wallet / signature /
+# card data; regenerate locally, NEVER commit)
 docs/api_probe_results.md
+docs/*.ini

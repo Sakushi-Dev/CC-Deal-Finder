@@ -171,6 +171,75 @@ def test_offer_min_market_prefers_current_value():
 
 
 # --------------------------------------------------------------------------- #
+# best_active_offer — reconstruct standing bids from the activity feed
+# --------------------------------------------------------------------------- #
+def _feed_entry(action, wallet, amount=None):
+    return {"action": action, "from": {"wallet": wallet}, "amount": amount}
+
+
+def test_best_active_offer_none_on_empty_feed():
+    assert H.best_active_offer([]) is None
+    assert H.best_active_offer(None) is None  # type: ignore[arg-type]
+
+
+def test_best_active_offer_picks_highest_open_bid():
+    feed = [
+        _feed_entry("Offer Made", "WB", 90.0),
+        _feed_entry("Offer Made", "WA", 114.7),
+    ]
+    best = H.best_active_offer(feed)
+    assert best is not None
+    assert best.buyer == "WA"
+    assert best.amount == 114.7
+
+
+def test_best_active_offer_ignores_cancelled_wallet():
+    # WA's newest event is a cancel -> dropped even though it bid higher.
+    feed = [
+        _feed_entry("Offer Cancelled", "WA"),
+        _feed_entry("Offer Made", "WA", 200.0),
+        _feed_entry("Offer Made", "WB", 90.0),
+    ]
+    best = H.best_active_offer(feed)
+    assert best is not None
+    assert best.buyer == "WB"
+    assert best.amount == 90.0
+
+
+def test_best_active_offer_ignores_accepted_wallet():
+    feed = [
+        _feed_entry("Offer Accepted", "WA"),
+        _feed_entry("Offer Made", "WA", 150.0),
+    ]
+    assert H.best_active_offer(feed) is None
+
+
+def test_best_active_offer_keeps_only_newest_event_per_wallet():
+    # WA re-bid higher (newest first) -> use the newest amount, not the older.
+    feed = [
+        _feed_entry("Offer Made", "WA", 120.0),
+        _feed_entry("Offer Made", "WA", 80.0),
+    ]
+    best = H.best_active_offer(feed)
+    assert best is not None
+    assert best.amount == 120.0
+
+
+def test_best_active_offer_skips_non_offer_events_and_bad_amounts():
+    feed = [
+        {"action": "Listing Updated", "from": {"wallet": "SELLER"},
+         "amount": 999.0},
+        _feed_entry("Offer Made", "WB", None),   # null amount -> not active
+        _feed_entry("Offer Made", "WC", 0.0),    # non-positive -> not active
+        _feed_entry("Offer Made", "WD", 12.5),
+    ]
+    best = H.best_active_offer(feed)
+    assert best is not None
+    assert best.buyer == "WD"
+    assert best.amount == 12.5
+
+
+# --------------------------------------------------------------------------- #
 # should_blacklist
 # --------------------------------------------------------------------------- #
 def test_should_blacklist_after_unpopular_days():

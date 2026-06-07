@@ -539,12 +539,48 @@ transition (only make-offer uses the full SUBMITTED→…→OPEN flow).
    idempotent and retryable; it fails safe (marks nothing sold) if the owned
    set cannot be fetched completely.
 
+#### Listing markdown / offer accept (VERIFIED — DevTools capture 2026-06-07)
+
+9. **Card activity feed** — ✅ **VERIFIED HTTP 200**
+   `GET card-activity/{nft}?day=60&v2=true`. Returns a flat, newest-first JSON
+   **array** (wrapped by the transport as `{ "data": [...] }`) mixing offers,
+   cancels, accepts and listing edits. Per entry: `action`
+   (`"Offer Made"` | `"Offer Cancelled"` | `"Offer Accepted"` | `"List"` |
+   `"Listing Updated"`), `instructionName`, `amount` (USDC | `null`),
+   `from`/`to` (`{ id, name, wallet }`), `cardId`, `createdAt`, `id`
+   (= Solana **tx signature**, not an offer id). There is **no standing-offers
+   endpoint and no offer id**: the current best incoming bid is reconstructed
+   from the feed by `best_active_offer` (per `from.wallet` keep the newest
+   offer-event; drop wallets whose newest event is a cancel/accept; among open
+   `"Offer Made"` pick the highest `amount`). A read, idempotent and retryable.
+
+10. **Update listing (markdown)** — ✅ **VERIFIED**
+    `POST marketplace/update-listing`:
+
+    ```jsonc
+    { "coin": "USDC", "newPrice": <number>, "seller": "<wallet>",
+      "tokenMint": "<nft>", "wallet": "<wallet>" }
+    ```
+
+    `seller` and `wallet` are both our own address. The old assumed body
+    `{ nftAddress, price, currency }` was wrong on every field. Response is a
+    bare base64 `VersionedTransaction` string. Non-retryable.
+
+11. **Accept offer** — ✅ **VERIFIED**
+    `POST marketplace/accept-offer`:
+
+    ```jsonc
+    { "buyer": "<bidder wallet>", "currency": "USDC", "nftAddress": "<nft>",
+      "price": <offer amount>, "wallet": "<our wallet>" }
+    ```
+
+    An offer is referenced by `buyer` + `price` + `nftAddress` (no offer id);
+    these map 1:1 from the best active bid in the card-activity feed
+    (`buyer = from.wallet`, `price = amount`). The old assumed body
+    `{ id, nftAddress? }` was wrong. Response is a bare base64 tx. Non-retryable.
+
 #### Open / unverified (trading)
 
-- The **listing markdown** body (`marketplace/update-listing`) and **accept-offer**
-  body (`marketplace/accept-offer`) — paths confirmed from the bundle map, bodies
-  not yet probed (these LiveExecutor methods stay safe-failure no-ops).
-- `getCardOffers` (RPC root) response shape — not probed.
 - The `checkListingStatus` **status vocabulary** when a listing *is* active
   (probed listing returned `exists:false` for our wallet).
 
@@ -707,22 +743,22 @@ The cycle report gains `bumped`, `cancelled`, `marked_down`, `offers_accepted`
 and `market_recheck`.
 
 > **Safe-failure (no money moved).** On the `LiveExecutor` all four
-> state-changing maintenance actions (`bump_offer`, `cancel_offer`,
-> `markdown_listing`, `accept_offer`) are **no-ops** that leave the order
-> untouched and call nothing — their detail reads
-> `… skipped: live shape not verified (ETAPPE 8)`. The `DryRunExecutor`
-> simulates the transitions for the report. The passes therefore surface
-> *which* offers/holdings are due without sending anything until Etappe 8
-> verifies the shapes against a funded wallet.
+> state-changing maintenance actions are **all LIVE** (Etappe 8): `bump_offer`
+> and `cancel_offer` (resting OPEN offer, no order transition) plus
+> `markdown_listing` and `accept_offer` (transient `LIST` order taken straight
+> to `CONFIRMED` on a confirmed broadcast). Each fails safe — any signing /
+> broadcast / API error leaves that single order untouched and the batch
+> continues — and is never auto-retried. The `DryRunExecutor` simulates the
+> same transitions for the report.
 
-The supporting client methods are **ASSUMED / unverified** seams in
+The supporting client methods are **VERIFIED** seams in
 [collectorcrypt/trader/ccapi.py](../collectorcrypt/trader/ccapi.py):
 
-| Method | Endpoint | Kind | Body (assumed) | Notes |
-|--------|----------|------|----------------|-------|
-| `get_card_offers(nft)` | RPC `getCardOffers` | read (retryable) | `{nftAddress}` | list incoming bids for a held card |
-| `update_listing(nft, price)` | `marketplace/update-listing` | write (non-retryable) | `{nftAddress, price, currency}` | re-price a live listing (markdown / bump-equivalent) |
-| `accept_offer(offer_id, nft)` | `marketplace/accept-offer` | write (non-retryable) | `{id, nftAddress?}` | accept a specific incoming bid |
+| Method | Endpoint | Kind | Body | Notes |
+|--------|----------|------|------|-------|
+| `get_card_activity(nft, day)` | `GET card-activity/{nft}?day=60&v2=true` | read (retryable) | — | newest-first activity feed; best active bid reconstructed by `best_active_offer` |
+| `update_listing(nft, price, wallet)` | `marketplace/update-listing` | write (non-retryable) | `{coin, newPrice, seller, tokenMint, wallet}` | re-price a live listing (markdown); returns bare base64 tx |
+| `accept_offer(nft, buyer, price, wallet)` | `marketplace/accept-offer` | write (non-retryable) | `{buyer, currency, nftAddress, price, wallet}` | accept a bid (no offer id — keyed by buyer+price+nft); returns bare base64 tx |
 
 Reads are idempotent and retry on 429/5xx/network; the two writes are never
 auto-retried (no double-accept / double-update).

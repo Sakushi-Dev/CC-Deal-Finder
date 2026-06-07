@@ -530,8 +530,9 @@ def test_dryrun_markdown_listing_lowers_price():
 
 def test_dryrun_accept_offer_confirms():
     lst = make_list(nft="N", price_usd=25.0, cycle_id="c", simulated=True)
-    out = DryRunExecutor().accept_offer(lst, "OFFER1")
+    out = DryRunExecutor().accept_offer(lst, "BUYER1", 27.0)
     assert out.status is OrderStatus.CONFIRMED
+    assert out.price_usd == 27.0
 
 
 # -- live offer bump (verified update-offer) -------------------------------- #
@@ -650,29 +651,108 @@ def test_live_cancel_offer_no_tx_leaves_offer_open():
     assert client.count("broadcast") == 0
 
 
-def test_live_markdown_listing_is_safe_noop():
+def test_live_markdown_listing_lowers_price_and_confirms():
     client = FakeClient()
     executor = make_live(client=client)
     lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
     out = executor.markdown_listing(lst, 23.0)
+    assert out.status is OrderStatus.CONFIRMED
+    assert out.price_usd == 23.0
+    assert client.call_names() == ["update_listing", "broadcast"]
+
+
+def test_live_markdown_listing_body_has_coin_seller_token_mint():
+    client = FakeClient()
+    wallet = FakeWallet(can_sign=True)
+    executor = make_live(client=client, wallet=wallet)
+    lst = make_list(nft="NFT9", price_usd=25.0, cycle_id="c")
+    executor.markdown_listing(lst, 19.5)
+    call = next(kw for name, kw in client.calls if name == "update_listing")
+    assert call["nft"] == "NFT9"
+    assert call["price"] == 19.5
+    assert call["wallet"] == wallet.address
+
+
+def test_live_markdown_listing_no_tx_leaves_price_unchanged():
+    client = FakeClient()
+    client.responses["update_listing"] = {"nope": True}  # no transaction
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.markdown_listing(lst, 23.0)
     assert out.price_usd == 25.0              # unchanged
-    assert client.calls == []
+    assert out.status is OrderStatus.PLANNED
+    assert client.count("broadcast") == 0
 
 
-def test_live_accept_offer_is_safe_noop():
+def test_live_markdown_listing_broadcast_error_leaves_price_unchanged_no_retry():
+    client = FakeClient()
+    client.errors["broadcast"] = CCServerError("5xx")
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.markdown_listing(lst, 23.0)
+    assert out.price_usd == 25.0
+    assert out.status is OrderStatus.PLANNED
+    assert client.count("broadcast") == 1     # never retried
+
+
+def test_live_accept_offer_settles_and_confirms():
     client = FakeClient()
     executor = make_live(client=client)
     lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
-    out = executor.accept_offer(lst, "OFFER1")
-    assert out.status is OrderStatus.PLANNED  # untouched
+    out = executor.accept_offer(lst, "BUYER1", 27.0)
+    assert out.status is OrderStatus.CONFIRMED
+    assert out.price_usd == 27.0
+    assert client.call_names() == ["accept_offer", "broadcast"]
+
+
+def test_live_accept_offer_body_has_buyer_price_nft_wallet():
+    client = FakeClient()
+    wallet = FakeWallet(can_sign=True)
+    executor = make_live(client=client, wallet=wallet)
+    lst = make_list(nft="NFT8", price_usd=25.0, cycle_id="c")
+    executor.accept_offer(lst, "BIDDER", 30.0)
+    call = next(kw for name, kw in client.calls if name == "accept_offer")
+    assert call["nft"] == "NFT8"
+    assert call["buyer"] == "BIDDER"
+    assert call["price"] == 30.0
+    assert call["wallet"] == wallet.address
+
+
+def test_live_accept_offer_without_buyer_is_skipped():
+    client = FakeClient()
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.accept_offer(lst, "", 0.0)
+    assert out.status is OrderStatus.PLANNED  # untouched, no call
     assert client.calls == []
+
+
+def test_live_accept_offer_no_tx_leaves_order_untouched():
+    client = FakeClient()
+    client.responses["accept_offer"] = {"nope": True}  # no transaction
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.accept_offer(lst, "BUYER1", 27.0)
+    assert out.status is OrderStatus.PLANNED
+    assert client.count("broadcast") == 0
+
+
+def test_live_accept_offer_broadcast_error_leaves_order_untouched_no_retry():
+    client = FakeClient()
+    client.errors["broadcast"] = CCServerError("5xx")
+    executor = make_live(client=client)
+    lst = make_list(nft="N", price_usd=25.0, cycle_id="c")
+    out = executor.accept_offer(lst, "BUYER1", 27.0)
+    assert out.status is OrderStatus.PLANNED
+    assert client.count("broadcast") == 1     # never retried
 
 
 def test_live_maintenance_moves_no_money():
     client = FakeClient()
     executor = make_live(client=client, volume=100.0)
     executor.bump_offer(_open_offer(price=8.0), 8.10)
-    executor.accept_offer(make_list(nft="N", price_usd=25.0, cycle_id="c"), "O")
+    executor.accept_offer(make_list(nft="N", price_usd=25.0, cycle_id="c"),
+                          "BUYER1", 27.0)
     assert executor._remaining == 100.0       # budget never touched
 
 

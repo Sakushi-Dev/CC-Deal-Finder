@@ -22,11 +22,12 @@ from ..normalize import normalize_card
 from .auth import SessionProvider
 from .ccapi import CCApiError, CCTradingClient
 from .config import TraderConfig
-from .executor import DryRunExecutor, Executor, LiveExecutor, record_sold_holding
-from .holdings import (SECONDS_PER_DAY, is_due_for_markdown,
+from .executor import (DryRunExecutor, Executor, LiveExecutor,
+                       record_markdown, record_sold_holding)
+from .holdings import (SECONDS_PER_DAY, best_active_offer, is_due_for_markdown,
                        is_due_for_offer_accept, is_due_for_recheck,
-                       markdown_price, next_bump_price, recheck_decision,
-                       should_bump, should_cancel_offer)
+                       markdown_price, next_bump_price, offer_meets_min_market,
+                       recheck_decision, should_bump, should_cancel_offer)
 from .orders import Order, OrderKind, OrderStatus, plan_to_orders
 from .reconcile import StatusSyncer
 from .risk import RiskEngine
@@ -518,12 +519,20 @@ class TradeEngine:
             if not is_due_for_markdown(holding, self._cfg, now):
                 continue
             new_price = markdown_price(holding, self._cfg)
+            old_price = round(holding.list_price_usd or 0.0, 2)
             order = self._listing_order_for(holding)
             out = executor.markdown_listing(order, new_price)
+            if out.status is OrderStatus.CONFIRMED:
+                # The live markdown settled -> advance the curve on the holding.
+                try:
+                    record_markdown(self._store, holding, new_price, now=now)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("markdown persist failed for %s: %s",
+                                   holding.nft, exc)
             results.append({
                 "nft": holding.nft,
                 "name": holding.name,
-                "old_price_usd": round(holding.list_price_usd or 0.0, 2),
+                "old_price_usd": old_price,
                 "new_price_usd": round(new_price, 2),
                 "status": out.status.value,
                 "detail": out.detail,
@@ -533,11 +542,13 @@ class TradeEngine:
     def _run_accept_offer_pass(self, executor: Executor) -> list[dict[str, Any]]:
         """Accept the best incoming bid on cards parked at the cost floor.
 
-        Selecting the due holdings is pure/safe; reading the actual incoming
-        offers (``getCardOffers``) and the accept call are the live, still-
-        unverified steps, so the executor accept is a safe no-op until
-        Etappe 8. The pass therefore surfaces *which* holdings are ready to
-        accept without reading or interpreting any assumed offer shape yet.
+        For each floored holding old enough to accept, the live card-activity
+        feed is read and the best still-open incoming offer is reconstructed
+        (``best_active_offer``). The bid must clear the configurable min-% of
+        market value (``offer_meets_min_market``) before the live accept fires;
+        on a confirmed settle the holding is marked sold. Reading the feed and
+        the accept are the live steps, now driven by the verified
+        ``card-activity`` / ``accept-offer`` shapes (Etappe 8.3).
         """
         if not isinstance(executor, LiveExecutor):
             return []
@@ -552,15 +563,58 @@ class TradeEngine:
         for holding in due:
             if not is_due_for_offer_accept(holding, self._cfg, now):
                 continue
+            try:
+                feed = self._fetch_card_activity(holding.nft)
+            except CCApiError as exc:
+                results.append({"nft": holding.nft, "name": holding.name,
+                                "error": f"offer read failed: {exc}"})
+                continue
+            except Exception as exc:  # noqa: BLE001
+                results.append({"nft": holding.nft, "name": holding.name,
+                                "error": f"offer read error: {exc}"})
+                continue
+            offer = best_active_offer(feed)
+            if offer is None:
+                results.append({"nft": holding.nft, "name": holding.name,
+                                "status": "skipped",
+                                "detail": "no active incoming offer"})
+                continue
+            if not offer_meets_min_market(offer.amount, holding, self._cfg):
+                results.append({
+                    "nft": holding.nft, "name": holding.name,
+                    "offer_usd": round(offer.amount, 2), "buyer": offer.buyer,
+                    "status": "skipped",
+                    "detail": "best offer below min market %"})
+                continue
             order = self._listing_order_for(holding)
-            out = executor.accept_offer(order, "")
+            out = executor.accept_offer(order, offer.buyer, offer.amount)
+            if out.status is OrderStatus.CONFIRMED:
+                try:
+                    record_sold_holding(self._store, holding, now=now)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("sold persist failed for %s: %s",
+                                   holding.nft, exc)
             results.append({
                 "nft": holding.nft,
                 "name": holding.name,
+                "offer_usd": round(offer.amount, 2),
+                "buyer": offer.buyer,
                 "status": out.status.value,
                 "detail": out.detail,
             })
         return results
+
+    def _fetch_card_activity(self, nft: str) -> list[dict[str, Any]]:
+        """Read a card's on-chain activity feed (newest first).
+
+        The verified ``card-activity`` endpoint returns a bare JSON array which
+        the transport wraps as ``{"data": [...]}``; this unwraps it to the raw
+        list for :func:`best_active_offer`. A read, so it is retryable.
+        """
+        client = CCTradingClient(session_provider=self._session_provider)
+        payload = client.get_card_activity(nft=nft)
+        feed = payload.get("data") if isinstance(payload, dict) else payload
+        return feed if isinstance(feed, list) else []
 
     def _run_market_recheck(self) -> dict[str, Any]:
         """Re-check held cards' current market value (feature 5b).

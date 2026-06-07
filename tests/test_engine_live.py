@@ -327,6 +327,35 @@ def test_live_cycle_bumps_due_offer(store, monkeypatch):
     assert persisted[0].price_usd == report["bumped"][0]["new_price_usd"]
 
 
+def test_live_cycle_markdown_persists_on_confirm(store, monkeypatch):
+    # An aged, above-floor listing is marked down LIVE (update-listing) and the
+    # new price + step counter are persisted on the holding so the curve moves.
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "M1"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    import time as _t
+    old = _t.time() - 100 * 86400.0
+    store.upsert_holding(Holding(
+        nft="M1", name="Card", category="Pokemon", acquired_at=old,
+        cost_usd=10.0, market_usd_at_buy=20.0, status="listed",
+        list_price_usd=20.0, listed_at=old))
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert len(report["marked_down"]) == 1
+    row = report["marked_down"][0]
+    assert row["nft"] == "M1"
+    assert row["status"] == "confirmed"
+    assert "update_listing" in fake.call_names()
+    held = store.get_holding("M1")
+    assert held.list_price_usd == row["new_price_usd"]
+    assert held.list_price_usd < 20.0          # stepped down
+    assert held.markdown_steps == 1            # curve advanced
+    assert held.last_markdown_at is not None
+
+
 def test_halted_cycle_empties_send_passes_but_keeps_recheck(store):
     # Trip the kill switch with three real consecutive failures.
     for i in range(3):
@@ -345,6 +374,103 @@ def test_halted_cycle_empties_send_passes_but_keeps_recheck(store):
     assert report["offers_accepted"] == []
     # The read-only re-check still runs while halted.
     assert report["market_recheck"]["checked"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Offer-accept pass (ETAPPE 8.3): card-activity feed -> accept best bid
+# --------------------------------------------------------------------------- #
+_ACCEPT_DAY = 86400.0
+
+
+def _seed_floored_listing(store, *, nft="A1", cost=10.0, list_price=10.0):
+    """Seed a holding listed at the cost floor and old enough to accept bids."""
+    import time as _t
+    old = _t.time() - 100 * _ACCEPT_DAY
+    store.upsert_holding(Holding(
+        nft=nft, name="Card", category="Pokemon", acquired_at=old,
+        cost_usd=cost, market_usd_at_buy=20.0, status="listed",
+        list_price_usd=list_price, listed_at=old))
+
+
+def _accept_feed(client, nft, feed):
+    """Make the FakeClient return *feed* for activity and keep *nft* owned."""
+    client.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": nft}], "totalPages": 1}
+    client.responses["get_card_activity"] = {"data": feed}
+
+
+def _bid(wallet, amount, action="Offer Made"):
+    return {"action": action, "from": {"wallet": wallet}, "amount": amount}
+
+
+def test_accept_pass_accepts_best_active_offer(store, monkeypatch):
+    fake = FakeClient()
+    _accept_feed(fake, "A1", [_bid("WB", 12.0), _bid("WA", 18.0)])
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_floored_listing(store, nft="A1")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert len(report["offers_accepted"]) == 1
+    row = report["offers_accepted"][0]
+    assert row["nft"] == "A1"
+    assert row["buyer"] == "WA"
+    assert row["offer_usd"] == 18.0
+    assert row["status"] == "confirmed"
+    # The live accept went out (accept-offer -> broadcast) with the best bid.
+    call = next(kw for name, kw in fake.calls if name == "accept_offer")
+    assert call["buyer"] == "WA"
+    assert call["price"] == 18.0
+    # The holding is now marked sold.
+    assert store.get_holding("A1").status == "sold"
+    assert store.get_holding("A1").sold_at is not None
+
+
+def test_accept_pass_skips_when_no_active_offer(store, monkeypatch):
+    fake = FakeClient()
+    # Only a cancelled offer -> nothing active.
+    _accept_feed(fake, "A1", [_bid("WA", 18.0, action="Offer Cancelled")])
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_floored_listing(store, nft="A1")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["offers_accepted"][0]["status"] == "skipped"
+    assert "accept_offer" not in fake.call_names()
+    assert store.get_holding("A1").status == "listed"
+
+
+def test_accept_pass_skips_offer_below_min_market(store, monkeypatch):
+    fake = FakeClient()
+    _accept_feed(fake, "A1", [_bid("WA", 5.0)])
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_floored_listing(store, nft="A1")
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      offer_accept_min_market_pct=80.0)  # 80% of 20 = 16
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store)
+    report = engine.run_cycle()
+    assert report["offers_accepted"][0]["status"] == "skipped"
+    assert "accept_offer" not in fake.call_names()
+    assert store.get_holding("A1").status == "listed"
+
+
+def test_accept_pass_read_error_is_safe(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "A1"}], "totalPages": 1}
+    fake.errors["get_card_activity"] = RuntimeError("feed down")
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_floored_listing(store, nft="A1")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert "error" in report["offers_accepted"][0]
+    assert "accept_offer" not in fake.call_names()
+    assert store.get_holding("A1").status == "listed"
 
 
 # --------------------------------------------------------------------------- #
