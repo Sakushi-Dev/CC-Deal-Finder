@@ -38,7 +38,7 @@ CollectorCrypt / Privy API and the request **and** response were inspected.
 | `getCardOffers` (incoming offers on a held card) | [ ] | Holdings plan Etappe 8; RPC name known, shape unverified |
 | `accept-offer` body | [ ] | Holdings plan Etappe 8; path known, body unverified |
 | Authoritative "sold" signal for a held card | [x] | DevTools capture 2026-06-07: `GET cards/{wallet}/` lists only owned cards — absence from the fully-paged owned set = sold/exited (no per-card status). Wired as `ownership_sync`. |
-| Current market value of a single owned NFT | [~] | Candidate found: `oraclePrice` per card in the same `cards/{wallet}/` response; not yet wired into `_run_market_recheck` |
+| Current market value of a single owned NFT | [x] | `oraclePrice` per card in the `cards/{wallet}/` response, wired into `_run_market_recheck` (E8.4) |
 
 **Bottom line:** auth and read paths are proven; **no write has settled
 on-chain yet**. The remaining unknowns all collapse once one real, reversible

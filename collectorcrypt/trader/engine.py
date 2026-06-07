@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import logging
 from typing import Any
 
 from ..api import CCClient
@@ -23,8 +24,9 @@ from .ccapi import CCApiError, CCTradingClient
 from .config import TraderConfig
 from .executor import DryRunExecutor, Executor, LiveExecutor, record_sold_holding
 from .holdings import (SECONDS_PER_DAY, is_due_for_markdown,
-                       is_due_for_offer_accept, markdown_price,
-                       next_bump_price, should_bump, should_cancel_offer)
+                       is_due_for_offer_accept, is_due_for_recheck,
+                       markdown_price, next_bump_price, recheck_decision,
+                       should_bump, should_cancel_offer)
 from .orders import Order, OrderKind, OrderStatus, plan_to_orders
 from .reconcile import StatusSyncer
 from .risk import RiskEngine
@@ -33,6 +35,28 @@ from .store import Holding, OrderStore
 from .strategy import (BuyPlan, build_plan, diagnose_listings,
                        make_candidates, make_offer_candidates)
 from .wallet import Wallet
+
+logger = logging.getLogger("collectorcrypt.trader.engine")
+
+
+def _oracle_price(card: dict[str, Any] | None) -> float | None:
+    """Read a held card's current market value from its owned-card payload.
+
+    The owned-cards endpoint carries ``oraclePrice`` (a string such as
+    ``"60.92"``) per card. Returns a positive float, or ``None`` when the card
+    is missing or the value is absent/unparseable/non-positive (so the caller
+    skips the re-check rather than acting on a bad number).
+    """
+    if not card:
+        return None
+    raw = card.get("oraclePrice")
+    if raw is None:
+        return None
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
 
 
 class TradeEngine:
@@ -361,9 +385,19 @@ class TradeEngine:
         mistaken for sold. A hard page cap bounds the loop. Any page error
         propagates so the caller fails safe (marks nothing sold).
         """
+        return set(self._fetch_owned_cards())
+
+    def _fetch_owned_cards(self) -> dict[str, dict[str, Any]]:
+        """Map every currently-owned NFT address to its raw owned-card payload.
+
+        Pages through all result pages (so a card on a later page is never
+        lost). Each card carries ``oraclePrice`` (the per-card market value) and
+        ``listing``/``listedAt`` (held vs listed). Any page error propagates so
+        callers fail safe.
+        """
         client = CCTradingClient(session_provider=self._session_provider)
         wallet = self._wallet.address
-        owned: set[str] = set()
+        owned: dict[str, dict[str, Any]] = {}
         page = 1
         max_pages = 50
         while page <= max_pages:
@@ -372,7 +406,7 @@ class TradeEngine:
             for card in cards:
                 nft = str(card.get("nftAddress") or "").strip()
                 if nft:
-                    owned.add(nft)
+                    owned[nft] = card
             try:
                 total_pages = int(payload.get("totalPages") or 1)
             except (TypeError, ValueError):
@@ -529,18 +563,66 @@ class TradeEngine:
         return results
 
     def _run_market_recheck(self) -> dict[str, Any]:
-        """Read-only market-value re-check for held cards (feature 5b).
+        """Re-check held cards' current market value (feature 5b).
 
-        The *source* of a single owned NFT's current market value is still an
-        open decision (holdings-lifecycle-plan §9) and unverified, so this pass
-        does not fetch or mutate anything yet. It is wired here (and runs even
-        while halted, being read-only) so Etappe 8 only has to plug the verified
-        source in.
+        The market value of a single owned NFT is read from ``oraclePrice`` in
+        the verified owned-cards endpoint (DevTools 2026-06-07). For each held,
+        unsold card due for a re-check, ``recheck_decision`` decides: on a
+        **positive** change it raises the resale target and restarts the sell
+        cycle at day 0 (resets the markdown clock); on a flat/negative change
+        nothing resets and the markdown curve continues. Either way the last
+        re-checked value and timestamp are persisted.
+
+        Read-only on the network (it never signs or spends), so it runs even
+        while the kill switch is tripped. Fails safe: any fetch error re-checks
+        nothing. A card absent from the owned set is left to ``ownership_sync``
+        (it has sold) and skipped here.
         """
-        return {
-            "checked": 0,
-            "note": "market-value source pending (ETAPPE 8 / plan §9)",
-        }
+        if self._store is None:
+            return {"checked": 0, "raised": []}
+        try:
+            held = self._store.held_cards()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"could not load holdings: {exc}"}
+        now = time.time()
+        due = [h for h in held if is_due_for_recheck(h, self._cfg, now)]
+        if not due:
+            return {"checked": 0, "raised": []}
+        try:
+            owned = self._fetch_owned_cards()
+        except CCApiError as exc:
+            return {"error": f"owned-cards fetch failed: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"owned-cards error: {exc}"}
+        checked = 0
+        raised: list[dict[str, Any]] = []
+        for holding in due:
+            price = _oracle_price(owned.get(holding.nft))
+            if price is None:
+                continue  # absent (sold -> ownership_sync) or no price -> skip
+            checked += 1
+            decision = recheck_decision(holding, price, self._cfg)
+            holding.market_usd_current = price
+            holding.market_checked_at = now
+            if decision.raised:
+                holding.market_usd_at_buy = decision.new_market_usd_at_buy
+                holding.list_price_usd = decision.new_list_price
+                # Restart the sell cycle at day 0 (reset the markdown timers).
+                holding.markdown_steps = 0
+                holding.last_markdown_at = None
+                holding.listed_at = now if holding.listed_at is not None else None
+                raised.append({
+                    "nft": holding.nft,
+                    "name": holding.name,
+                    "new_market_usd": round(price, 2),
+                    "new_list_price_usd": round(decision.new_list_price, 2),
+                })
+            try:
+                self._store.upsert_holding(holding)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("market recheck persist failed for %s: %s",
+                               holding.nft, exc)
+        return {"checked": checked, "raised": raised}
 
     def _listing_order_for(self, holding: Holding) -> Order:
         """Build a transient ``LIST`` order describing a held card's listing.

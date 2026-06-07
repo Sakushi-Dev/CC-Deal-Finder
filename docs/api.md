@@ -527,7 +527,8 @@ transition (only make-offer uses the full SUBMITTED→…→OPEN flow).
    `{ totalCards, totalPages, filterNFtCard: [ ...cards ] }`. Each card carries
    `nftAddress`, `id`, `listing` (object | `null`), `listedAt`, `status`
    (the on-chain transfer status, e.g. `"Transferred"`) and **`oraclePrice`**
-   (a per-card market value — the candidate source for the §9 market re-check).
+   (a per-card market value — the source for the §9 market re-check, wired into
+   the engine's `_run_market_recheck` in E8.4).
 
    **Sold signal:** the endpoint lists **only cards still owned**. There is no
    per-card `"Sold"` status — a held card that has sold (or been transferred

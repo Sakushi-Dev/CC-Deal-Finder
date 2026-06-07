@@ -282,8 +282,9 @@ def test_live_cycle_market_recheck_is_readonly_stub(store):
     engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
                         store=store)
     report = engine.run_cycle()
+    # With no held cards there is nothing to re-check.
     assert report["market_recheck"]["checked"] == 0
-    assert "pending" in report["market_recheck"]["note"]
+    assert report["market_recheck"]["raised"] == []
 
 
 def test_dryrun_cycle_no_maintenance_keys(store):
@@ -432,6 +433,89 @@ def test_fetch_owned_nfts_paginates_all_pages(store, monkeypatch):
     owned = engine._fetch_owned_nfts()
     assert owned == {"A", "B"}
     assert paged.calls == 2  # both pages fetched, page-2 card not lost
+
+
+# --------------------------------------------------------------------------- #
+# Market-value re-check (ETAPPE 8.4): oraclePrice from owned-cards (feature 5b)
+# --------------------------------------------------------------------------- #
+def _owned_card(nft, price):
+    return {"nftAddress": nft, "oraclePrice": price}
+
+
+def test_market_recheck_raises_on_positive_market(store, monkeypatch):
+    fake = FakeClient()
+    # Card still owned (so ownership_sync keeps it) but now worth more.
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [_owned_card("R1", "30")], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="R1")  # market_usd_at_buy=20.0
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["market_recheck"]["checked"] == 1
+    assert [r["nft"] for r in report["market_recheck"]["raised"]] == ["R1"]
+    held = store.get_holding("R1")
+    assert held.market_usd_current == 30.0
+    assert held.market_usd_at_buy == 30.0  # new reference persisted
+    assert held.market_checked_at is not None
+    assert held.markdown_steps == 0  # sell cycle restarted at day 0
+    assert held.last_markdown_at is None
+
+
+def test_market_recheck_flat_records_value_without_raise(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [_owned_card("R2", "15")], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="R2")  # market_usd_at_buy=20.0
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["market_recheck"]["checked"] == 1
+    assert report["market_recheck"]["raised"] == []
+    held = store.get_holding("R2")
+    assert held.market_usd_current == 15.0
+    assert held.market_usd_at_buy == 20.0  # unchanged on a flat/negative move
+    assert held.market_checked_at is not None
+
+
+def test_market_recheck_fetch_error_is_failsafe(store, monkeypatch):
+    fake = FakeClient()
+    fake.errors["get_owned_cards"] = RuntimeError("api down")
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="R3")
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert "error" in report["market_recheck"]
+    held = store.get_holding("R3")
+    assert held.market_checked_at is None  # nothing re-checked on a fetch error
+
+
+def test_market_recheck_skips_when_not_due(store, monkeypatch):
+    import time
+
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [_owned_card("R4", "99")], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    # Re-checked just now -> not yet due (default market_recheck_hours=24).
+    store.upsert_holding(Holding(nft="R4", name="Card", category="Pokemon",
+                                 acquired_at=1.0, cost_usd=10.0,
+                                 market_usd_at_buy=20.0,
+                                 market_checked_at=time.time(), status="held"))
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["market_recheck"]["checked"] == 0
+    assert report["market_recheck"]["raised"] == []
+    assert store.get_holding("R4").market_usd_current is None
+
+
 def _raw_card(nft, *, price="10", insured=100, category="Pokemon",
               marketplace="CC"):
     """A raw CC API card that normalizes into a qualifying listing."""

@@ -75,7 +75,7 @@ plan therefore separates **decision logic (buildable now)** from **live executio
 | Change a live listing price (markdown) | 5 | ❌ unverified (re-list / `marketplace/list`) | DevTools capture |
 | Read incoming offers for a held card | 5 | ❌ `getCardOffers` RPC name known, shape unverified | DevTools capture |
 | Accept an offer | 5 | ❌ `marketplace/accept-offer` path known, body unverified; not in `ccapi` yet | DevTools capture |
-| Current market value of a held card | 5b | ❓ source unconfirmed for a single owned NFT | Decide: re-query insured value via card lookup vs. re-scan marketplace |
+| Current market value of a held card | 5b | ✅ **VERIFIED** (E8.4) — per-card `oraclePrice` in the `cards/{wallet}/` owned-cards response | Done (DevTools capture 2026-06-07) |
 
 > **Implication:** Phases 1–3 below are pure logic + persistence + dry-run and can
 > land immediately. Phases 4–5 (live wiring) wait on the DevTools captures, exactly
@@ -546,8 +546,20 @@ Gated entirely on DevTools captures; **reversible call first**.
   3. Capture `update-listing`, `getCardOffers`, `accept-offer`; enable the markdown
      and offer-accept live paths (LiveExecutor `markdown_listing` / `accept_offer`
      stay safe-failure no-ops until then).
-  4. Decide & wire the **§9 market-value source** for held cards (5/5b), then enable
-     `_run_market_recheck`'s live read.
+  4. ✅ **DONE (E8.4) — market-value source for held cards wired (5/5b).**
+     Settles §9 open item (a): the per-card `oraclePrice` (a string such as
+     `"60.92"`) in the already-verified `GET cards/{wallet}/` owned-cards
+     response is the current market value of a single owned NFT — no extra
+     endpoint needed. `_run_market_recheck` now reads it (via the shared
+     `_fetch_owned_cards` pager), and for each held, unsold card **due** per
+     `TRADER_MARKET_RECHECK_HOURS` applies `recheck_decision`: a **positive**
+     move raises the resale target and restarts the sell cycle at day 0 (resets
+     `markdown_steps` / `last_markdown_at` / the markdown clock) while persisting
+     the new value as `market_usd_at_buy`; a flat/negative move only records the
+     last-checked value. Read-only on the network (runs even while halted) and
+     fails safe — a fetch error or absent card re-checks nothing (an absent card
+     is the sold case, handled by `ownership_sync`). The actual on-chain
+     re-pricing stays a safe no-op until step 3 (`update-listing`).
   - Each capture flips exactly one seam method to `VERIFIED` with a test asserting
     the exact body; nothing goes live while still `ASSUMED`. Tiny, supervised
     amounts only (wallet holds ~20 USDC).
