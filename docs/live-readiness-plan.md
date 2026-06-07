@@ -110,8 +110,11 @@ Run **outside** the engine via the controlled harness
 `LiveExecutor` emits), one phase per invocation (no loop). Any fund-moving phase
 refuses to run without `--confirm-funds` and prints USDC/SOL before & after.
 
-- [ ] **Phase create** (`--phase create`): build the offer tx; inspect the raw
-      response. No signing, no funds move.
+- [x] **Phase create** (`--phase create`): build the offer tx; inspect the raw
+      response. No signing, no funds move. *(2026-06-07: SIWS auth + make-offer
+      body accepted; returns a signable base64 tx. NOTE: there is an absolute
+      minimum-offer floor of ~$5 USDC — an offer of ≤ $1 is rejected `400 "Too
+      low"`, so the real test needs a card where a ≥ $5 bid is sensible.)*
 - [ ] **Phase place** (`--phase place --confirm-funds`): sign locally, broadcast;
       confirm **USDC moved to escrow**.
 - [ ] Inspect the broadcast response and the resulting on-chain state.

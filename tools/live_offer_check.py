@@ -280,10 +280,14 @@ def run(args: argparse.Namespace) -> int:
         d_nft, d_card_id, d_ask = _discover_cheapest_card()
         nft = nft or d_nft
         card_id = card_id or d_card_id
-        if d_ask and price <= 0:
-            # Default to a small bid well under the ask for a shape-only run.
-            price = round(min(d_ask * 0.5, 3.0), 2)
-            info(f"discovered ask {d_ask}; defaulting offer price to {price}.")
+        if d_ask and price <= 0 and args.phase == "create":
+            # create moves no funds, so default to a price that clears the
+            # marketplace minimum-offer rule (an absolute ~$5 USDC floor, not a
+            # fraction of the ask) and confirms the body returns a tx. place
+            # never auto-defaults a real bid: it must be set explicitly.
+            price = max(round(d_ask, 2), 5.0)
+            info(f"discovered ask {d_ask}; defaulting create-probe price to "
+                 f"{price} (>= the ~$5 minimum-offer floor; moves no funds).")
     if not nft:
         fail("no target nftAddress (pass --nft, or let create auto-discover).")
         return 1
