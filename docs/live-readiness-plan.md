@@ -94,23 +94,31 @@ this is a fully **reversible** live test — unlike a buy, which settles instant
       `createMakeOfferTx` instead of the REST path).
 - [ ] Update `ccapi.broadcast` **response** parsing (`_extract_signature`,
       `_is_confirmed`, `_is_filled`) to the real envelope.
-- [ ] Update `ccapi.cancel_offer` to the verified body.
+- [x] Update `ccapi.cancel_offer` to the verified body. *(E8.1)*
 - [ ] Confirm `wallet.sign_transaction` (base64 + v0 + sole signer) round-trips
-      the real offer transaction.
-- [ ] Update `docs/api.md`: mark offer/broadcast/cancel as VERIFIED.
-- [ ] Add/adjust tests for the new shapes; keep the suite green.
+      the real offer transaction. *(proven by the §4 escrow run)*
+- [x] Update `docs/api.md`: mark offer/broadcast/cancel as VERIFIED. *(E8.1)*
+- [x] Add/adjust tests for the new shapes; keep the suite green. *(E8.1, 806 tests)*
 
 ---
 
 ## 4. Reversible live offer test (escrow)
 
-Run **outside** the engine, as a controlled two-phase script (no loop):
+Run **outside** the engine via the controlled harness
+[tools/live_offer_check.py](../tools/live_offer_check.py) — it drives the real
+`ccapi` request builders + `wallet.sign_transaction` (the same bytes the
+`LiveExecutor` emits), one phase per invocation (no loop). Any fund-moving phase
+refuses to run without `--confirm-funds` and prints USDC/SOL before & after.
 
-- [ ] **Phase create**: build the offer tx; inspect the raw response. No signing.
-- [ ] **Phase broadcast**: sign locally, broadcast; confirm **USDC moved to escrow**
-      and the order reaches `OPEN`.
+- [ ] **Phase create** (`--phase create`): build the offer tx; inspect the raw
+      response. No signing, no funds move.
+- [ ] **Phase place** (`--phase place --confirm-funds`): sign locally, broadcast;
+      confirm **USDC moved to escrow**.
 - [ ] Inspect the broadcast response and the resulting on-chain state.
-- [ ] **Cancel the offer in the UI**; confirm the **USDC is refunded**.
+- [ ] **Phase cancel** (`--phase cancel --confirm-funds`) — or cancel in the UI;
+      confirm the **USDC is refunded**.
+- [ ] (Optional) **Phase bump** (`--phase bump --confirm-funds --price <higher>`)
+      to exercise `update-offer` before cancelling.
 - [ ] Verify the reconciler/status-sync interprets the lifecycle correctly.
 
 Exit criteria: an offer was placed, observed in escrow, and refunded — with the
