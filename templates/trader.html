@@ -83,12 +83,24 @@
                  {% if f.step is defined %}step="{{ f.step }}"{% endif %}>
           {% elif f.type == 'multiselect' %}
           {% set picked = f.value.split(',') | map('trim') | list %}
-          <select id="set_{{ f.env }}" data-cat-field multiple size="6">
-            {% for opt in f.options %}
-            <option value="{{ opt }}" {% if opt in picked %}selected{% endif %}>{{ opt }}</option>
-            {% endfor %}
-          </select>
-          <small class="hint">Hold Ctrl (Cmd on Mac) to pick several. None = all.</small>
+          <div class="cat-dropdown" data-cat-dropdown id="set_{{ f.env }}"
+               data-env="{{ f.env }}">
+            <button type="button" class="cat-toggle" aria-haspopup="true"
+                    aria-expanded="false">
+              <span class="cat-toggle-label">All categories</span>
+              <span class="cat-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="cat-menu" hidden>
+              {% for opt in f.options %}
+              <label class="cat-option">
+                <input type="checkbox" value="{{ opt }}"
+                       {% if opt in picked %}checked{% endif %}>
+                <span>{{ opt }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+          <small class="hint">No ticks = all categories.</small>
           {% else %}
           <input type="text" id="set_{{ f.env }}" name="{{ f.env }}"
                  value="{{ f.value }}"

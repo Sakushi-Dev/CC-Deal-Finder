@@ -520,14 +520,50 @@
       btn.setAttribute('aria-expanded', String(open));
     });
   }
+
+  /* ---- category checkbox dropdowns ---- */
+  function catSummary(dd) {
+    const picked = [...dd.querySelectorAll('.cat-menu input:checked')]
+      .map(c => c.value);
+    const lbl = dd.querySelector('.cat-toggle-label');
+    if (!picked.length) { lbl.textContent = 'All categories'; }
+    else if (picked.length <= 2) { lbl.textContent = picked.join(', '); }
+    else { lbl.textContent = `${picked.length} selected`; }
+  }
+  function closeAllCatMenus(except) {
+    document.querySelectorAll('[data-cat-dropdown]').forEach(dd => {
+      if (dd === except) return;
+      dd.querySelector('.cat-menu').hidden = true;
+      dd.querySelector('.cat-toggle').setAttribute('aria-expanded', 'false');
+    });
+  }
+  document.querySelectorAll('[data-cat-dropdown]').forEach(dd => {
+    const toggle = dd.querySelector('.cat-toggle');
+    const menu = dd.querySelector('.cat-menu');
+    catSummary(dd);
+    toggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      const willOpen = menu.hidden;
+      closeAllCatMenus(dd);
+      menu.hidden = !willOpen;
+      toggle.setAttribute('aria-expanded', String(willOpen));
+    });
+    menu.addEventListener('change', () => catSummary(dd));
+  });
+  // Click outside any dropdown closes the open menu.
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-cat-dropdown]')) closeAllCatMenus(null);
+  });
+
   $('settingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {};
     new FormData(e.target).forEach((v, k) => { payload[k] = v; });
-    // Multiselect category dropdown has no form name; collect it by hand.
-    document.querySelectorAll('[data-cat-field]').forEach(sel => {
-      const env = sel.id.replace('set_', '');
-      const picked = [...sel.selectedOptions].map(o => o.value);
+    // Category dropdowns have no form name; collect their ticks by hand.
+    document.querySelectorAll('[data-cat-dropdown]').forEach(dd => {
+      const env = dd.dataset.env;
+      const picked = [...dd.querySelectorAll('.cat-menu input:checked')]
+        .map(c => c.value);
       payload[env] = picked.join(',');
     });
     const msg = $('settingsMsg');
