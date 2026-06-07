@@ -26,13 +26,13 @@ CollectorCrypt / Privy API and the request **and** response were inspected.
 | `checkListingStatus` (RPC) | [x] | `POST /v2 {method,params}` → 200 `{exists,marketplace,listing}` |
 | `marketplace/buy` request body | [x] | 201 → bare base64 VersionedTransaction (probe 2026-06-06) |
 | `marketplace/buy` → broadcast → on-chain settle | [ ] | Never executed (requires a real purchase) |
-| `marketplace/make-offer` request body | [x] | DevTools capture 2026-06-07: `{cardId,currency,nftAddress,price,wallet}` (cardId = raw card id; old 400 cause) |
+| `marketplace/make-offer` request body | [x] | DevTools capture 2026-06-07; **settled on-chain 2026-06-07** (live escrow offer, sig `5Smokh…d22X`): `{cardId,currency,nftAddress,price,wallet}` |
 | `marketplace/update-offer` request body (bump) | [x] | DevTools capture 2026-06-07: `{buyer,currency,nftAddress,price,wallet}` — real offer edit (answers §9.2) |
-| `marketplace/cancel-offer` request body | [x] | DevTools capture 2026-06-07: `{coin,keepInEscrow,nftAddress,wallet}` (field is `coin`, no offer id) |
-| `marketplace/broadcast` response shape | [x] | DevTools capture 2026-06-07: `{success:true,signature,message}` |
+| `marketplace/cancel-offer` request body | [x] | DevTools capture 2026-06-07; **settled on-chain 2026-06-07** (escrow refunded, sig `4gF8zA…mzCC`): `{coin,keepInEscrow,nftAddress,wallet}` |
+| `marketplace/broadcast` response shape | [x] | DevTools capture 2026-06-07; **exercised live 2026-06-07** (offer place + cancel both broadcast, real signatures returned): `{success:true,signature,message}` |
 | `marketplace/list` / relist body | [ ] | Path known, body unverified |
 | `cancel-listing` body | [ ] | Path known, body unverified |
-| `sign_transaction` (base64 + v0, sole signer) | [~] | Plausible; only provable via a real signed broadcast |
+| `sign_transaction` (base64 + v0, sole signer) | [x] | **Proven 2026-06-07**: signed the real make-offer + cancel-offer v0 transactions locally and both broadcast successfully (escrow debited then refunded) |
 | Status-sync vocabulary (confirmed/cancelled) | [~] | `checkListingStatus` lacks status words → sync stays failure-safe |
 | `update-listing` body (markdown / price change) | [x] | DevTools capture 2026-06-07 (E8.3): `{coin,newPrice,seller,tokenMint,wallet}` — bare base64 tx |
 | `card-activity` feed (incoming offers on a held card) | [x] | DevTools capture 2026-06-07 (E8.3): `GET card-activity/{nft}?day=60&v2=true` newest-first feed; best bid via `best_active_offer` (no offer id) |
@@ -40,10 +40,12 @@ CollectorCrypt / Privy API and the request **and** response were inspected.
 | Authoritative "sold" signal for a held card | [x] | DevTools capture 2026-06-07: `GET cards/{wallet}/` lists only owned cards — absence from the fully-paged owned set = sold/exited (no per-card status). Wired as `ownership_sync`. |
 | Current market value of a single owned NFT | [x] | `oraclePrice` per card in the `cards/{wallet}/` response, wired into `_run_market_recheck` (E8.4) |
 
-**Bottom line:** auth and read paths are proven; **no write has settled
-on-chain yet**. The remaining unknowns all collapse once one real, reversible
-write (an escrow offer) is captured and executed. The post-buy lifecycle adds a
-few more write shapes (markdown / accept-offer / sold-signal) tracked in
+**Bottom line:** auth, read paths **and the reversible escrow write are proven
+on-chain** (2026-06-07: a real 6 USDC offer was placed — USDC 20.005 → 14.005 —
+and cancelled — 14.005 → 20.005 refunded — via the live `LiveExecutor` code
+paths). The buy/list/cancel-listing write shapes remain to be settled the same
+way. The post-buy lifecycle adds a few more write shapes (markdown / accept-
+offer / sold-signal) tracked in
 [holdings-lifecycle-plan.md](holdings-lifecycle-plan.md) Etappe 8 — they are
 verified the same way (capture → align → tiny supervised test) and are listed
 here so this plan stays the single live-readiness source of truth.
@@ -115,13 +117,21 @@ refuses to run without `--confirm-funds` and prints USDC/SOL before & after.
       body accepted; returns a signable base64 tx. NOTE: there is an absolute
       minimum-offer floor of ~$5 USDC — an offer of ≤ $1 is rejected `400 "Too
       low"`, so the real test needs a card where a ≥ $5 bid is sensible.)*
-- [ ] **Phase place** (`--phase place --confirm-funds`): sign locally, broadcast;
-      confirm **USDC moved to escrow**.
-- [ ] Inspect the broadcast response and the resulting on-chain state.
-- [ ] **Phase cancel** (`--phase cancel --confirm-funds`) — or cancel in the UI;
-      confirm the **USDC is refunded**.
+- [x] **Phase place** (`--phase place --confirm-funds`): sign locally, broadcast;
+      confirm **USDC moved to escrow**. *(2026-06-07: placed a real 6 USDC offer
+      on nft `AhUaju…qKkH` (card `2026011154C97268`, ask 18) — broadcast accepted,
+      on-chain signature `5Smokh…d22X`; balance USDC 20.005 → 14.005 (−6 exact),
+      SOL −0.002 gas. The 6 USDC sat in escrow as a resting OPEN offer.)*
+- [x] Inspect the broadcast response and the resulting on-chain state. *(server
+      returned `{success, signature}`; the offer was funded and resting in escrow,
+      confirmed via the balance delta.)*
+- [x] **Phase cancel** (`--phase cancel --confirm-funds`); confirmed the
+      **USDC is refunded**. *(2026-06-07: cancel broadcast accepted, on-chain
+      signature `4gF8zA…mzCC`; balance USDC 14.005 → 20.005 (+6 refunded), SOL
+      returned to ~0.059. Reversible round-trip complete.)*
 - [ ] (Optional) **Phase bump** (`--phase bump --confirm-funds --price <higher>`)
-      to exercise `update-offer` before cancelling.
+      to exercise `update-offer` before cancelling. *(not run — place+cancel
+      already prove sign+broadcast end-to-end; update-offer body is captured.)*
 - [ ] Verify the reconciler/status-sync interprets the lifecycle correctly.
 
 Exit criteria: an offer was placed, observed in escrow, and refunded — with the
