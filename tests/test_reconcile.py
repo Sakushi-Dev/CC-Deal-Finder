@@ -17,6 +17,8 @@ import pytest
 from collectorcrypt.trader.ccapi import CCServerError
 from collectorcrypt.trader.orders import OrderKind, OrderStatus
 from collectorcrypt.trader.reconcile import Reconciler, StatusSyncer
+from collectorcrypt.trader.store import (HOLDING_HELD, HOLDING_LISTED,
+                                         HOLDING_SOLD, Holding)
 
 from .conftest import FakeClient, make_buy, make_list, make_offer
 
@@ -222,3 +224,75 @@ def test_sync_relist_idempotent(store):
     StatusSyncer(store, client=client, wallet="W").sync()
     # Manually re-open is impossible (terminal), but the relist candidate exists.
     assert len(store.relist_candidates()) == 1
+
+
+# --------------------------------------------------------------------------- #
+# StatusSyncer holdings population (ETAPPE 5)
+# --------------------------------------------------------------------------- #
+def test_sync_confirmed_buy_records_holding(store):
+    o = make_buy(nft="A", name="Card", category="Pokemon", cycle_id="c",
+                 simulated=False, price_usd=10, market_usd=20)
+    _seed_active(store, o, OrderStatus.PENDING)
+    client = FakeClient()
+    client.responses["check_listing_status"] = {"status": "confirmed"}
+    StatusSyncer(store, client=client, wallet="W").sync()
+    holding = store.get_holding("A")
+    assert holding is not None
+    assert holding.status == HOLDING_HELD
+    assert holding.cost_usd == 10
+    assert holding.market_usd_at_buy == 20
+
+
+def test_sync_filled_offer_records_holding(store):
+    o = make_offer(nft="A", cycle_id="c", simulated=False, price_usd=8,
+                   market_usd=20)
+    _seed_active(store, o, OrderStatus.OPEN)
+    client = FakeClient()
+    client.responses["check_listing_status"] = {"status": "accepted"}
+    StatusSyncer(store, client=client, wallet="W").sync()
+    holding = store.get_holding("A")
+    assert holding is not None
+    assert holding.status == HOLDING_HELD
+    assert holding.cost_usd == 8
+
+
+def test_sync_simulated_order_records_no_holding(store):
+    o = make_buy(nft="A", cycle_id="c", simulated=True, market_usd=20)
+    _seed_active(store, o, OrderStatus.PENDING)
+    client = FakeClient()
+    client.responses["check_listing_status"] = {"status": "confirmed"}
+    report = StatusSyncer(store, client=client, wallet="W").sync()
+    assert report.confirmed == 1  # the order still resolves
+    assert store.get_holding("A") is None  # but no ledger row
+
+
+def test_sync_confirmed_list_marks_holding_sold(store):
+    # A held+listed card whose relist (LIST) order resolves confirmed = sold.
+    store.upsert_holding(Holding(nft="A", acquired_at=1.0, cost_usd=10,
+                                 market_usd_at_buy=20, listed_at=2.0,
+                                 list_price_usd=18, status=HOLDING_LISTED))
+    o = make_list(nft="A", cycle_id="c", simulated=False, price_usd=18,
+                  market_usd=20)
+    _seed_active(store, o, OrderStatus.PENDING)
+    client = FakeClient()
+    client.responses["check_listing_status"] = {"status": "confirmed"}
+    StatusSyncer(store, client=client, wallet="W").sync()
+    holding = store.get_holding("A")
+    assert holding.status == HOLDING_SOLD
+    assert holding.sold_at is not None and holding.sold_at > 0
+
+
+def test_sync_holdings_write_failure_does_not_abort(store, monkeypatch):
+    o = make_buy(nft="A", cycle_id="c", simulated=False, market_usd=20)
+    _seed_active(store, o, OrderStatus.PENDING)
+    client = FakeClient()
+    client.responses["check_listing_status"] = {"status": "confirmed"}
+
+    def boom(_holding):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(store, "upsert_holding", boom)
+    report = StatusSyncer(store, client=client, wallet="W").sync()
+    assert report.confirmed == 1  # the order sync completed despite the failure
+    assert store.get_by_client_order_id(
+        o.client_order_id).status is OrderStatus.CONFIRMED

@@ -22,6 +22,7 @@ from collectorcrypt.trader.executor import (DryRunExecutor, LiveExecutor,
                                             _extract_tx, _first, _is_cancelled,
                                             _is_confirmed, _is_filled)
 from collectorcrypt.trader.orders import Order, OrderKind, OrderStatus
+from collectorcrypt.trader.store import HOLDING_HELD, HOLDING_LISTED
 
 from .conftest import (FakeClient, FakeWallet, make_buy, make_config, make_list,
                        make_offer)
@@ -352,6 +353,91 @@ def test_returns_same_order_objects():
     order = make_buy(price_usd=10, market_usd=20)
     result = executor.execute([order])
     assert order in result
+
+
+# --------------------------------------------------------------------------- #
+# Holdings lifecycle (ETAPPE 5) — populate the ledger on settle
+# --------------------------------------------------------------------------- #
+def test_confirmed_buy_records_held_holding(store):
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+    executor.execute([make_buy(nft="HOLD1", name="Card", category="Pokemon",
+                               price_usd=10, market_usd=20, cycle_id="c")])
+    holding = store.get_holding("HOLD1")
+    assert holding is not None
+    assert holding.status == HOLDING_HELD
+    assert holding.cost_usd == 10
+    assert holding.market_usd_at_buy == 20
+    assert holding.acquired_at > 0
+
+
+def test_filled_offer_records_held_holding(store):
+    client = FakeClient()
+    client.broadcast_response = {"status": "filled"}
+    executor = make_live(client=client, store=store)
+    [offer] = executor.execute([make_offer(nft="OFF1", price_usd=8,
+                                           market_usd=20, cycle_id="c")])
+    assert offer.status is OrderStatus.CONFIRMED
+    holding = store.get_holding("OFF1")
+    assert holding is not None
+    assert holding.status == HOLDING_HELD
+    assert holding.cost_usd == 8
+
+
+def test_open_offer_records_no_holding(store):
+    client = FakeClient()
+    client.broadcast_response = {"status": "ok"}  # accepted onto the book, not filled
+    executor = make_live(client=client, store=store)
+    [offer] = executor.execute([make_offer(nft="OFF2", price_usd=8,
+                                           market_usd=20, cycle_id="c")])
+    assert offer.status is OrderStatus.OPEN
+    assert store.get_holding("OFF2") is None
+
+
+def test_simulated_buy_records_no_holding(store):
+    # A simulated order may still resolve, but must never touch the live ledger.
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+    [buy] = [o for o in executor.execute([make_buy(nft="SIM1", price_usd=10,
+                                                   market_usd=20, cycle_id="c",
+                                                   simulated=True)])
+             if o.kind is OrderKind.BUY]
+    assert buy.status is OrderStatus.CONFIRMED
+    assert store.get_holding("SIM1") is None
+
+
+def test_relist_going_live_marks_holding_listed(store):
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+    executor.execute([make_buy(nft="REL1", price_usd=10, market_usd=20,
+                               cycle_id="c")])
+    out = executor.relist(make_list(nft="REL1", price_usd=18, cycle_id="c"))
+    assert out.status is OrderStatus.CONFIRMED
+    holding = store.get_holding("REL1")
+    assert holding.status == HOLDING_LISTED
+    assert holding.listed_at > 0
+    assert holding.list_price_usd == 18
+
+
+def test_relist_without_prior_holding_writes_nothing(store):
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+    executor.relist(make_list(nft="NOHOLD", price_usd=18, cycle_id="c"))
+    assert store.get_holding("NOHOLD") is None
+
+
+def test_holdings_write_failure_does_not_abort_buy(store, monkeypatch):
+    client = FakeClient()
+    executor = make_live(client=client, store=store)
+
+    def boom(_holding):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(store, "upsert_holding", boom)
+    [buy] = [o for o in executor.execute([make_buy(nft="B1", price_usd=10,
+                                                   market_usd=20, cycle_id="c")])
+             if o.kind is OrderKind.BUY]
+    assert buy.status is OrderStatus.CONFIRMED  # the order still settled
 
 
 # --------------------------------------------------------------------------- #

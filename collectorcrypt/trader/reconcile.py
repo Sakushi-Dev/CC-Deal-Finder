@@ -30,7 +30,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .executor import _is_cancelled, _is_confirmed, _is_filled
+from .executor import (_is_cancelled, _is_confirmed, _is_filled,
+                       record_acquisition, record_sold)
 from .orders import Order, OrderKind, OrderStatus, relist_order_for
 from .store import OrderStore
 
@@ -241,6 +242,7 @@ class StatusSyncer:
             self._transition(order, OrderStatus.CONFIRMED,
                              detail="remote status: confirmed", report=report)
             report.confirmed += 1
+            self._record_holding(order)
             if order.kind is OrderKind.BUY and order.resell_usd > 0:
                 if self._spawn_relist(order):
                     report.relisted_spawned += 1
@@ -265,6 +267,23 @@ class StatusSyncer:
             "from": prev,
             "to": status.value,
         })
+
+    def _record_holding(self, order: Order) -> None:
+        """Populate the holdings ledger from an authoritatively confirmed order.
+
+        A confirmed buy / filled offer records the cost-basis ``held`` row; a
+        confirmed relist (``LIST``) marks the holding ``sold``. Guarded by its
+        own try/except so a holdings write can never abort the status-sync loop
+        (a fill is still resolved even if the ledger write fails).
+        """
+        try:
+            if order.kind in (OrderKind.BUY, OrderKind.OFFER):
+                record_acquisition(self._store, order)
+            elif order.kind is OrderKind.LIST:
+                record_sold(self._store, order)
+        except Exception as exc:  # noqa: BLE001 - a holdings write must not abort the sync
+            logger.warning("Holdings write failed for order %s: %s",
+                           order.id, exc)
 
     def _spawn_relist(self, buy: Order) -> bool:
         """Create + persist the linked relist candidate for a confirmed buy.

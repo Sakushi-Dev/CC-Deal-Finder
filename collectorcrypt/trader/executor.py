@@ -37,10 +37,12 @@ Robustness rules for the live path (no fire-and-forget)
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Protocol
 
 from .ccapi import (CCApiError, CCAuthError, CCTradingClient)
 from .orders import Order, OrderKind, OrderStatus, relist_order_for
+from .store import (Holding, HOLDING_HELD, HOLDING_LISTED, HOLDING_SOLD)
 from .wallet import WalletError
 
 logger = logging.getLogger("collectorcrypt.trader.executor")
@@ -163,10 +165,11 @@ class LiveExecutor:
         if not self._sign_and_broadcast(order, tx, external_id):
             return [order]
 
-        # 4) Spend accounting + relist follow-up for a confirmed buy.
+        # 4) Spend accounting + holdings + relist follow-up for a confirmed buy.
         followups: list[Order] = []
         if order.status is OrderStatus.CONFIRMED:
             self._remaining = max(0.0, self._remaining - order.price_usd)
+            self._record_acquisition(order)
             if order.resell_usd > 0:
                 relist = relist_order_for(order)
                 self._defer_relist(relist)
@@ -200,6 +203,10 @@ class LiveExecutor:
         if order.status is OrderStatus.OPEN:
             # Reserve the committed amount so we do not over-commit the budget.
             self._remaining = max(0.0, self._remaining - order.price_usd)
+        elif order.status is OrderStatus.CONFIRMED:
+            # An offer that filled on submit is a real acquisition + spend.
+            self._remaining = max(0.0, self._remaining - order.price_usd)
+            self._record_acquisition(order)
         return order
 
     # ------------------------------------------------------------------ #
@@ -237,6 +244,8 @@ class LiveExecutor:
                 return order
             self._sign_and_broadcast(order, tx, external_id,
                                      confirm_detail="listing is live")
+            if order.status is OrderStatus.CONFIRMED:
+                self._record_listed(order)
             return order
         except Exception as exc:  # noqa: BLE001 - one bad relist must not abort the batch
             self._fail(order, f"unexpected error: {exc}")
@@ -388,6 +397,25 @@ class LiveExecutor:
         except Exception as exc:  # noqa: BLE001 - persistence failure must not abort a live send
             logger.error("Failed to persist order %s: %s", order.id, exc)
 
+    # ------------------------------------------------------------------ #
+    # Holdings lifecycle (ETAPPE 5) — best-effort, never aborts a send
+    # ------------------------------------------------------------------ #
+    def _record_acquisition(self, order: Order) -> None:
+        """Record the cost-basis holding for a settled buy/filled offer."""
+        try:
+            record_acquisition(self._store, order)
+        except Exception as exc:  # noqa: BLE001 - a holdings write must never abort a live send
+            logger.error("Failed to record holding for %s: %s",
+                         order.nft, exc)
+
+    def _record_listed(self, order: Order) -> None:
+        """Flip the holding to ``listed`` when its relist goes live."""
+        try:
+            record_listed(self._store, order)
+        except Exception as exc:  # noqa: BLE001 - a holdings write must never abort a relist
+            logger.error("Failed to mark holding listed for %s: %s",
+                         order.nft, exc)
+
 
 # --------------------------------------------------------------------------- #
 # Response interpretation (ASSUMED shapes — see docs/api.md)
@@ -461,3 +489,86 @@ def _is_cancelled(resp: Any) -> bool:
             "removed", "delisted"):
         return True
     return bool(_first(resp, "cancelled", "canceled", "withdrawn"))
+
+
+# --------------------------------------------------------------------------- #
+# Holdings lifecycle writers (ETAPPE 5)
+# --------------------------------------------------------------------------- #
+# Side-effect-free except for the holdings upsert. Shared by the live executor
+# (settle time) and the status syncer (a fill/sale discovered later), so both
+# entry points populate the same source of truth identically.
+#
+# Hard guard: a holding is **only ever** written for a *real* order
+# (``simulated is False``). Dry-run/demo orders may simulate their transitions
+# for tests but must never leave a row in the live holdings ledger.
+def record_acquisition(store: Any, order: Order, *,
+                       now: float | None = None) -> bool:
+    """Write/refresh the ``held`` holdings row for a settled buy/filled offer.
+
+    Captures the permanent cost basis (``acquired_at``/``cost_usd``/
+    ``market_usd_at_buy``) the moment a BUY confirms or an OFFER fills. Returns
+    ``True`` when a holding was written, ``False`` when a guard short-circuits
+    (no store, simulated order, wrong kind, or missing nft).
+
+    Idempotent: ``upsert_holding`` keeps ``acquired_at``/``cost_usd`` immutable
+    on a repeat, so a fill seen twice (executor + later status sync) is safe.
+    """
+    if store is None or order is None or order.simulated:
+        return False
+    if order.kind not in (OrderKind.BUY, OrderKind.OFFER) or not order.nft:
+        return False
+    ts = time.time() if now is None else float(now)
+    store.upsert_holding(Holding(
+        nft=order.nft,
+        name=order.name,
+        category=order.category,
+        acquired_at=ts,
+        cost_usd=order.price_usd,
+        market_usd_at_buy=order.market_usd,
+        status=HOLDING_HELD,
+    ))
+    return True
+
+
+def record_listed(store: Any, order: Order, *,
+                  now: float | None = None) -> bool:
+    """Flip the holding to ``listed`` when its relist (``LIST``) goes live.
+
+    Sets ``listed_at``/``list_price_usd`` and ``status="listed"`` on the
+    existing holding for ``order.nft``. Never invents a cost basis: if no
+    holding exists yet (the buy was never recorded) it does nothing. Real
+    ``LIST`` orders only.
+    """
+    if store is None or order is None or order.simulated:
+        return False
+    if order.kind is not OrderKind.LIST or not order.nft:
+        return False
+    holding = store.get_holding(order.nft)
+    if holding is None:
+        return False
+    holding.listed_at = time.time() if now is None else float(now)
+    holding.list_price_usd = order.price_usd
+    holding.status = HOLDING_LISTED
+    store.upsert_holding(holding)
+    return True
+
+
+def record_sold(store: Any, order: Order, *,
+                now: float | None = None) -> bool:
+    """Mark the holding ``sold`` when its relist (``LIST``) order confirms.
+
+    Sets ``sold_at`` and ``status="sold"`` on the existing holding for
+    ``order.nft``. Does nothing when no holding exists. Real ``LIST`` orders
+    only.
+    """
+    if store is None or order is None or order.simulated:
+        return False
+    if order.kind is not OrderKind.LIST or not order.nft:
+        return False
+    holding = store.get_holding(order.nft)
+    if holding is None:
+        return False
+    holding.sold_at = time.time() if now is None else float(now)
+    holding.status = HOLDING_SOLD
+    store.upsert_holding(holding)
+    return True
