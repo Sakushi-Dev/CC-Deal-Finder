@@ -35,6 +35,7 @@ keypair.json
 trader.env
 trade_history.jsonl
 trader_settings.json
+trader_profiles.json
 
 # IDE / Editor
 .vscode/

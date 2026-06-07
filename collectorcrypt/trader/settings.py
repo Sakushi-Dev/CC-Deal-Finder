@@ -161,6 +161,99 @@ EDITABLE_FIELDS: list[dict[str, Any]] = [
 _EDITABLE_ENV = {f["env"] for f in EDITABLE_FIELDS}
 
 
+# --------------------------------------------------------------------------- #
+# Strategy presets
+# --------------------------------------------------------------------------- #
+# Built-in, read-only profiles. Each only sets the *strategy* knobs (allocation,
+# discounts, offer psychology, markdown curve); budget, risk caps and connection
+# settings are left untouched so a preset never overwrites a user's wallet
+# reserves or kill-switch. Applying a preset merges these over the current
+# values, so anything not listed here is kept.
+BUILTIN_PRESETS: list[dict[str, Any]] = [
+    {
+        "id": "direct_flip",
+        "label": "Direct flip — buy & sell only",
+        "description": (
+            "100% direct buys, no offers. Only snaps up clear bargains (deep "
+            "discount) and relists just under market so you are the cheapest "
+            "comparable — buyers anchor on the lowest price, so an undercut "
+            "sells fastest. Frequent small markdowns keep capital turning over "
+            "instead of locked in unsold cards."
+        ),
+        "values": {
+            "TRADER_DIRECT_BUY_PCT": "100",
+            "TRADER_OFFER_PCT": "0",
+            "TRADER_MIN_DISCOUNT_PCT": "30",
+            "TRADER_RESELL_DISCOUNT_PCT": "8",
+            "TRADER_MARKDOWN_DELAY_DAYS": "3",
+            "TRADER_MARKDOWN_STEP_PCT": "5",
+            "TRADER_MARKDOWN_INTERVAL_DAYS": "2",
+            "TRADER_OFFER_ACCEPT_DELAY_DAYS": "7",
+            "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "90",
+        },
+    },
+    {
+        "id": "balanced",
+        "label": "Balanced 50 / 50",
+        "description": (
+            "Half the volume buys instantly, half rests as offers — hedging "
+            "speed against price. Offers sit a meaningful but non-insulting "
+            "step below ask (a credible anchor the seller can still feel good "
+            "accepting) and are gently bumped to re-surface in the seller's "
+            "notifications (mere-exposure nudging) before being cancelled."
+        ),
+        "values": {
+            "TRADER_DIRECT_BUY_PCT": "50",
+            "TRADER_OFFER_PCT": "50",
+            "TRADER_MIN_DISCOUNT_PCT": "25",
+            "TRADER_OFFER_DISCOUNT_PCT": "15",
+            "TRADER_OFFER_MAX_PREMIUM_PCT": "10",
+            "TRADER_RESELL_DISCOUNT_PCT": "10",
+            "TRADER_MARKDOWN_DELAY_DAYS": "5",
+            "TRADER_MARKDOWN_STEP_PCT": "5",
+            "TRADER_MARKDOWN_INTERVAL_DAYS": "3",
+            "TRADER_OFFER_BUMP_USD": "0.1",
+            "TRADER_OFFER_BUMP_AGE_HOURS": "24",
+            "TRADER_OFFER_BUMP_MAX": "3",
+            "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
+            "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "85",
+        },
+    },
+    {
+        "id": "patient_offers",
+        "label": "Patient offers — offers & sell only",
+        "description": (
+            "100% standing offers, no instant buys. Lowball bids set a wide "
+            "anchor far below ask; you only need a fraction to land. Persistent "
+            "bumps repeatedly ping the seller (loss-aversion + nagging — a "
+            "resting bid they keep seeing is a bird in the hand). Skips sellers "
+            "priced well above market, who almost never accept a lowball."
+        ),
+        "values": {
+            "TRADER_DIRECT_BUY_PCT": "0",
+            "TRADER_OFFER_PCT": "100",
+            "TRADER_OFFER_DISCOUNT_PCT": "25",
+            "TRADER_OFFER_MAX_PREMIUM_PCT": "5",
+            "TRADER_RESELL_DISCOUNT_PCT": "10",
+            "TRADER_OFFER_BUMP_USD": "0.1",
+            "TRADER_OFFER_BUMP_AGE_HOURS": "18",
+            "TRADER_OFFER_BUMP_MAX": "5",
+            "TRADER_MARKDOWN_DELAY_DAYS": "7",
+            "TRADER_MARKDOWN_STEP_PCT": "4",
+            "TRADER_MARKDOWN_INTERVAL_DAYS": "4",
+            "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
+            "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "85",
+        },
+    },
+]
+
+_PRESET_BY_ID = {p["id"]: p for p in BUILTIN_PRESETS}
+
+# User-saved profiles live next to the overrides file. Git-ignored.
+PROFILES_PATH = Path(os.environ.get("TRADER_PROFILES_PATH", "trader_profiles.json"))
+
+
+
 def load_overrides() -> dict[str, str]:
     """Return the saved overrides (``{}`` if the file is missing/invalid)."""
     try:
@@ -225,3 +318,94 @@ def _validate(values: dict[str, Any]) -> dict[str, str]:
             text = str(int(num)) if num.is_integer() else str(num)
         clean[env] = text
     return clean
+
+
+# --------------------------------------------------------------------------- #
+# Profiles (built-in presets + user-saved snapshots)
+# --------------------------------------------------------------------------- #
+def _effective_values() -> dict[str, str]:
+    """Current effective value of every editable field (env + overrides)."""
+    overrides = load_overrides()
+    out: dict[str, str] = {}
+    for field in EDITABLE_FIELDS:
+        env = field["env"]
+        out[env] = overrides.get(env, os.environ.get(env, ""))
+    return out
+
+
+def load_user_profiles() -> dict[str, dict[str, str]]:
+    """Return saved user profiles (``{}`` if the file is missing/invalid)."""
+    try:
+        raw = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for name, values in raw.items():
+        if not isinstance(values, dict):
+            continue
+        out[str(name)] = {k: str(v) for k, v in values.items()
+                          if k in _EDITABLE_ENV and v is not None}
+    return out
+
+
+def _write_user_profiles(profiles: dict[str, dict[str, str]]) -> None:
+    PROFILES_PATH.write_text(
+        json.dumps(profiles, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def list_profiles() -> dict[str, Any]:
+    """Presets + saved profiles for the UI selector."""
+    return {
+        "presets": [
+            {"id": p["id"], "label": p["label"], "description": p["description"]}
+            for p in BUILTIN_PRESETS
+        ],
+        "custom": sorted(load_user_profiles().keys()),
+    }
+
+
+def apply_preset(preset_id: str) -> dict[str, str]:
+    """Merge a built-in preset's strategy values over the current overrides."""
+    preset = _PRESET_BY_ID.get(preset_id)
+    if preset is None:
+        raise ValueError(f"unknown preset: {preset_id}")
+    return save_overrides(dict(preset["values"]))
+
+
+def apply_user_profile(name: str) -> dict[str, str]:
+    """Apply a saved user profile (its values become the live overrides)."""
+    profile = load_user_profiles().get(name)
+    if profile is None:
+        raise ValueError(f"unknown profile: {name}")
+    return save_overrides(dict(profile))
+
+
+def save_user_profile(name: str) -> list[str]:
+    """Snapshot the current effective settings under ``name``.
+
+    Returns the sorted list of profile names after saving.
+    """
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("profile name is required")
+    if len(clean) > 60:
+        raise ValueError("profile name is too long (max 60 chars)")
+    if clean in _PRESET_BY_ID:
+        raise ValueError("that name is reserved for a built-in preset")
+    profiles = load_user_profiles()
+    profiles[clean] = _effective_values()
+    _write_user_profiles(profiles)
+    return sorted(profiles.keys())
+
+
+def delete_user_profile(name: str) -> list[str]:
+    """Delete a saved user profile. Returns the remaining names."""
+    profiles = load_user_profiles()
+    if name in profiles:
+        del profiles[name]
+        _write_user_profiles(profiles)
+    return sorted(profiles.keys())
+

@@ -104,6 +104,7 @@ def trader():
         "trader.html",
         state=_trader().snapshot(),
         settings=trader_settings.current_settings(),
+        profiles=trader_settings.list_profiles(),
         loop_interval=int(cfg.loop_interval_sec),
     )
 
@@ -338,3 +339,46 @@ def trader_settings_post():
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "saved": saved,
                     "settings": trader_settings.current_settings()})
+
+
+@api_bp.route("/trader/profiles", methods=["GET"])
+def trader_profiles_get():
+    return jsonify({"ok": True, "profiles": trader_settings.list_profiles()})
+
+
+@api_bp.route("/trader/profiles/apply", methods=["POST"])
+def trader_profiles_apply():
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    kind = (payload.get("type") or "").strip()
+    name = (payload.get("name") or "").strip()
+    try:
+        if kind == "preset":
+            trader_settings.apply_preset(name)
+        elif kind == "custom":
+            trader_settings.apply_user_profile(name)
+        else:
+            return jsonify({"ok": False, "error": "unknown profile type"}), 400
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "settings": trader_settings.current_settings()})
+
+
+@api_bp.route("/trader/profiles/save", methods=["POST"])
+def trader_profiles_save():
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    name = (payload.get("name") or "").strip()
+    try:
+        names = trader_settings.save_user_profile(name)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "profiles": trader_settings.list_profiles(),
+                    "saved": name, "custom": names})
+
+
+@api_bp.route("/trader/profiles/delete", methods=["POST"])
+def trader_profiles_delete():
+    payload = request.get_json(silent=True) or request.form.to_dict()
+    name = (payload.get("name") or "").strip()
+    names = trader_settings.delete_user_profile(name)
+    return jsonify({"ok": True, "profiles": trader_settings.list_profiles(),
+                    "custom": names})

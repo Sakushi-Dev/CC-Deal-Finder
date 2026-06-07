@@ -945,6 +945,52 @@ label { font-size: .8rem; color: var(--text-muted); }
   padding: 0 .3em;
   font-size: .92em;
 }
+
+/* Strategy profile bar ---------------------------------------------- */
+.profile-bar {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: .75rem 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem .6rem;
+}
+.profile-row label {
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--text-dim);
+}
+.profile-row select {
+  padding: .4rem .55rem;
+  font-size: .8rem;
+  min-width: 220px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text);
+}
+.profile-row button {
+  padding: .4rem .7rem;
+  font-size: .78rem;
+}
+.profile-desc {
+  margin: 0;
+  font-size: .78rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  border-left: 2px solid var(--accent, var(--border-strong));
+  padding: .35rem 0 .35rem .6rem;
+  max-width: 78ch;
+}
 /* The settings form switches from the legacy grid to a stack of groups. */
 .trader-settings {
   display: flex;

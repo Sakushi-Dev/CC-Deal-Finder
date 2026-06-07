@@ -342,3 +342,114 @@ def test_config_is_frozen():
     cfg = make_config()
     with pytest.raises(Exception):
         cfg.live = True  # frozen dataclass
+
+
+# --------------------------------------------------------------------------- #
+# Strategy profiles (built-in presets + user-saved snapshots)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def profiles_file(tmp_path, monkeypatch):
+    """Point the user-profiles file at an isolated temp path."""
+    path = tmp_path / "trader_profiles.json"
+    monkeypatch.setenv("TRADER_PROFILES_PATH", str(path))
+    monkeypatch.setattr(settingsmod, "PROFILES_PATH", path)
+    return path
+
+
+def test_builtin_presets_have_expected_ids():
+    ids = {p["id"] for p in settingsmod.BUILTIN_PRESETS}
+    assert ids == {"direct_flip", "balanced", "patient_offers"}
+
+
+def test_presets_only_reference_editable_keys():
+    for preset in settingsmod.BUILTIN_PRESETS:
+        for env in preset["values"]:
+            assert env in settingsmod._EDITABLE_ENV
+
+
+def test_preset_allocations_are_consistent():
+    by_id = {p["id"]: p["values"] for p in settingsmod.BUILTIN_PRESETS}
+    assert by_id["direct_flip"]["TRADER_DIRECT_BUY_PCT"] == "100"
+    assert by_id["direct_flip"]["TRADER_OFFER_PCT"] == "0"
+    assert by_id["balanced"]["TRADER_DIRECT_BUY_PCT"] == "50"
+    assert by_id["balanced"]["TRADER_OFFER_PCT"] == "50"
+    assert by_id["patient_offers"]["TRADER_DIRECT_BUY_PCT"] == "0"
+    assert by_id["patient_offers"]["TRADER_OFFER_PCT"] == "100"
+
+
+def test_apply_preset_persists_values(clean_env, settings_file, profiles_file):
+    settingsmod.apply_preset("patient_offers")
+    overrides = settingsmod.load_overrides()
+    assert overrides["TRADER_OFFER_PCT"] == "100"
+    assert overrides["TRADER_DIRECT_BUY_PCT"] == "0"
+
+
+def test_apply_preset_merges_over_existing(clean_env, settings_file, profiles_file):
+    settingsmod.save_overrides({"TRADER_RESERVE_USDC": "42"})
+    settingsmod.apply_preset("balanced")
+    overrides = settingsmod.load_overrides()
+    assert overrides["TRADER_RESERVE_USDC"] == "42"  # untouched by the preset
+    assert overrides["TRADER_DIRECT_BUY_PCT"] == "50"
+
+
+def test_apply_unknown_preset_raises(clean_env, settings_file, profiles_file):
+    with pytest.raises(ValueError):
+        settingsmod.apply_preset("does_not_exist")
+
+
+def test_save_and_apply_user_profile(clean_env, settings_file, profiles_file):
+    settingsmod.save_overrides({"TRADER_MIN_DISCOUNT_PCT": "33"})
+    settingsmod.save_user_profile("My profile")
+    # Change the live setting, then restore via the saved profile.
+    settingsmod.save_overrides({"TRADER_MIN_DISCOUNT_PCT": "10"})
+    settingsmod.apply_user_profile("My profile")
+    assert settingsmod.load_overrides()["TRADER_MIN_DISCOUNT_PCT"] == "33"
+
+
+def test_save_user_profile_rejects_blank(clean_env, settings_file, profiles_file):
+    with pytest.raises(ValueError):
+        settingsmod.save_user_profile("   ")
+
+
+def test_save_user_profile_rejects_preset_name(clean_env, settings_file, profiles_file):
+    with pytest.raises(ValueError):
+        settingsmod.save_user_profile("balanced")
+
+
+def test_delete_user_profile(clean_env, settings_file, profiles_file):
+    settingsmod.save_user_profile("A")
+    settingsmod.save_user_profile("B")
+    remaining = settingsmod.delete_user_profile("A")
+    assert remaining == ["B"]
+
+
+def test_list_profiles_shape(clean_env, settings_file, profiles_file):
+    settingsmod.save_user_profile("Custom one")
+    listing = settingsmod.list_profiles()
+    assert [p["id"] for p in listing["presets"]] == \
+        ["direct_flip", "balanced", "patient_offers"]
+    assert listing["custom"] == ["Custom one"]
+
+
+def test_load_user_profiles_ignores_invalid(profiles_file):
+    profiles_file.write_text("{ not valid json")
+    assert settingsmod.load_user_profiles() == {}
+
+
+# --------------------------------------------------------------------------- #
+# trader_settings.example.json must stay in sync with EDITABLE_FIELDS
+# --------------------------------------------------------------------------- #
+def test_example_settings_file_lists_every_editable_field():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    example = json.loads(
+        (root / "trader_settings.example.json").read_text(encoding="utf-8")
+    )
+    keys = {k for k in example if k != "_comment"}
+    editable = {f["env"] for f in settingsmod.EDITABLE_FIELDS}
+    assert keys == editable, (
+        f"missing: {sorted(editable - keys)} extra: {sorted(keys - editable)}"
+    )
+
+

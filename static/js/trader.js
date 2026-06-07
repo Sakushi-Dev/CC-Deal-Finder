@@ -555,6 +555,104 @@
     if (!e.target.closest('[data-cat-dropdown]')) closeAllCatMenus(null);
   });
 
+  /* ---- strategy profiles ---- */
+  // Push a server settings list ({env,value,type,...}) back into the form.
+  function applySettingsToForm(settings) {
+    (settings || []).forEach(f => {
+      if (f.type === 'multiselect') {
+        const dd = document.querySelector(`[data-cat-dropdown][data-env="${f.env}"]`);
+        if (!dd) return;
+        const picked = String(f.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        dd.querySelectorAll('.cat-menu input').forEach(cb => {
+          cb.checked = picked.includes(cb.value);
+        });
+        catSummary(dd);
+      } else {
+        const input = $(`set_${f.env}`);
+        if (input) input.value = f.value;
+      }
+    });
+  }
+
+  (function profiles() {
+    const sel = $('profileSelect');
+    if (!sel) return;
+    const desc = $('profileDesc');
+    const delBtn = $('profileDeleteBtn');
+    const msg = $('profileMsg');
+    const flash = (text, ok = true) => {
+      msg.textContent = text;
+      msg.style.color = ok ? 'var(--good)' : 'var(--bad)';
+      if (text) setTimeout(() => { if (msg.textContent === text) msg.textContent = ''; }, 2800);
+    };
+    const post = async (url, body) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      return res.json();
+    };
+    const refreshCustom = (names) => {
+      const grp = $('profileCustom');
+      grp.innerHTML = '';
+      (names || []).forEach(n => {
+        const o = document.createElement('option');
+        o.value = `custom:${n}`; o.textContent = n;
+        grp.appendChild(o);
+      });
+      grp.hidden = !(names && names.length);
+    };
+
+    sel.addEventListener('change', () => {
+      const opt = sel.selectedOptions[0];
+      const isCustom = sel.value.startsWith('custom:');
+      delBtn.hidden = !isCustom;
+      const d = opt ? opt.dataset.desc : '';
+      if (d) { desc.textContent = d; desc.hidden = false; }
+      else { desc.textContent = ''; desc.hidden = true; }
+    });
+
+    $('profileApplyBtn').addEventListener('click', async () => {
+      if (!sel.value) { flash('Pick a profile first', false); return; }
+      const [kind, ...rest] = sel.value.split(':');
+      const name = rest.join(':');
+      try {
+        const j = await post('/trader/profiles/apply', { type: kind, name });
+        if (!j.ok) { flash(j.error || 'Error', false); return; }
+        applySettingsToForm(j.settings);
+        flash('Profile applied — review and Save settings to confirm');
+      } catch (err) { flash('Request failed', false); }
+    });
+
+    $('profileSaveBtn').addEventListener('click', async () => {
+      const name = (prompt('Save current settings as profile:') || '').trim();
+      if (!name) return;
+      try {
+        const j = await post('/trader/profiles/save', { name });
+        if (!j.ok) { flash(j.error || 'Error', false); return; }
+        refreshCustom(j.custom);
+        sel.value = `custom:${name}`;
+        sel.dispatchEvent(new Event('change'));
+        flash(`Saved “${name}” ✓`);
+      } catch (err) { flash('Request failed', false); }
+    });
+
+    delBtn.addEventListener('click', async () => {
+      if (!sel.value.startsWith('custom:')) return;
+      const name = sel.value.slice('custom:'.length);
+      if (!confirm(`Delete profile “${name}”?`)) return;
+      try {
+        const j = await post('/trader/profiles/delete', { name });
+        if (!j.ok) { flash(j.error || 'Error', false); return; }
+        refreshCustom(j.custom);
+        sel.value = '';
+        sel.dispatchEvent(new Event('change'));
+        flash(`Deleted “${name}”`);
+      } catch (err) { flash('Request failed', false); }
+    });
+  })();
+
   $('settingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {};
