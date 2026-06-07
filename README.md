@@ -30,6 +30,8 @@ in dry-run mode, and never trade with funds you cannot afford to lose.
 - [Installation](#installation)
 - [Run](#run)
 - [Project structure](#project-structure)
+- [Autonomous trader](#autonomous-trader)
+- [Live readiness](#live-readiness)
 - [Architecture](#architecture)
 - [Development](#development)
 - [License](#license)
@@ -110,8 +112,14 @@ Alternatively, on Windows double-click [`start.bat`](start.bat) — starts the a
 │   ├── web.py                   # Flask factory + blueprints (views, api)
 │   └── trader/                  # Autonomous trader (local, dry-run by default)
 │       ├── config.py            # config: secrets from .env, tunables from JSON
+│       ├── settings.py          # UI-editable tunables + strategy profiles
 │       ├── wallet.py            # Solana RPC balances + (live) keypair signing
+│       ├── auth.py / siws.py    # SIWS (sign-in-with-Solana) session providers
+│       ├── ccapi.py             # authenticated CC trading client (writes)
 │       ├── strategy.py          # CC-only, quantity-first, escalation (pure)
+│       ├── orders.py / store.py # order/holding models + SQLite persistence
+│       ├── risk.py              # spend caps + kill-switch posture
+│       ├── manager.py / reconcile.py # loop control + crash recovery
 │       ├── engine.py            # one decision cycle (source → plan → execute)
 │       └── executor.py          # DryRunExecutor + gated LiveExecutor
 ├── templates/
@@ -191,10 +199,20 @@ python trade.py --loop 300
 ```
 
 For a **dry-run** you only need `TRADER_WALLET_ADDRESS` (read-only) and an RPC
-URL. Live execution additionally requires `TRADER_WALLET_SECRET` **and**
-`TRADER_LIVE=true`. The live executor is intentionally not implemented yet (the
-CollectorCrypt buy flow still has to be built and verified on a funded test
-wallet), so real spending cannot happen by accident.
+URL. Live execution is gated behind **three** independent conditions, all of
+which must hold before a single real transaction is signed:
+
+1. `TRADER_LIVE=true` (the master switch, env-only — never settable from the UI),
+2. a usable `TRADER_WALLET_SECRET` (the local signing keypair), **and**
+3. a configured auth provider so the bot can authenticate to CollectorCrypt.
+
+If any one is missing the bot stays in dry-run and **plans only — it spends
+nothing**. The `LiveExecutor` itself is implemented and its money-moving path
+(make-offer → local sign → broadcast → on-chain settle → cancel/refund) has been
+verified end-to-end on a funded test wallet. Writes are **never auto-retried**
+(double-spend guard). See **[Live readiness](#live-readiness)** before enabling
+live mode — several mandatory steps (risk caps, dedicated RPC, supervised
+buy test) are still required.
 
 ### Dashboard (`/trader`)
 
@@ -209,9 +227,32 @@ The bot also has a web dashboard inside the app at `/trader`:
   `trade_history.jsonl`.
 - **Settings** — edit the strategy tuning knobs at runtime (saved to the
   git-ignored `trader_settings.json`; defaults ship in
-  `trader_settings.example.json`). The private key, the live switch, the auth
-  credentials and auto-resume stay in `.env` and **cannot** be changed from the
-  UI.
+  `trader_settings.example.json`), grouped into labelled sections with a
+  per-setting info button. **Strategy profiles** let you switch the whole
+  strategy in one click — three built-in presets (*Direct flip*, *Balanced
+  50/50*, *Patient offers*) plus saveable custom profiles. The private key, the
+  live switch, the auth credentials and auto-resume stay in `.env` and **cannot**
+  be changed from the UI.
+
+## Live readiness
+
+> **Status: dry-run-ready; live integration verified for the reversible escrow
+> path, not yet cleared for unattended live operation.**
+
+The hardest part is proven: SIWS authentication and a **reversible on-chain
+escrow offer** (place → sign → broadcast → settle → cancel → refund) have been
+executed end-to-end on a funded test wallet. Before the loop may run unattended
+with real money, several **mandatory** steps remain — risk caps, a dedicated
+RPC, and one supervised tiny buy. These are tracked in:
+
+- **[docs/live-readiness-plan.md](docs/live-readiness-plan.md)** — the full
+  verification route and per-shape evidence (single source of truth).
+- **[docs/go-live-checklist.md](docs/go-live-checklist.md)** — the concise,
+  actionable list of what is still open before live.
+
+> ⚠️ **Do not run with `TRADER_LIVE=true` until the go-live checklist is
+> complete.** In particular, all risk limits currently default to `0`
+> (disabled); they must be set to non-zero values first.
 
 ## Architecture
 
