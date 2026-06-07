@@ -54,9 +54,10 @@
 <!-- Settings drawer -->
 <div id="settingsPanel" class="settings-drawer" style="display:none;">
   <div class="settings-intro">
-    These override your <code>.env</code> at runtime (saved locally to
-    <code>trader_settings.json</code>). The private key and live switch stay in
-    <code>.env</code> and cannot be changed here. Tap the
+    These are saved locally to <code>trader_settings.json</code> and are the
+    primary store for strategy tuning — they take precedence over any leftover
+    value in <code>.env</code>, which is left untouched. The private key and the
+    live switch stay in <code>.env</code> and cannot be changed here. Tap the
     <span class="info-btn-demo">i</span> next to any setting for an explanation.
   </div>
   <form id="settingsForm" class="trader-settings">
