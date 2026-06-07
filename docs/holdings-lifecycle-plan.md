@@ -69,8 +69,8 @@ plan therefore separates **decision logic (buildable now)** from **live executio
 
 | Capability needed | By feature | Current status | How we close it |
 |-------------------|-----------|----------------|-----------------|
-| Edit/raise an existing offer | 1 | ❌ unverified (`make-offer` body still 400) | DevTools capture of `createMakeOfferTx`/`marketplace/make-offer`; seam supports **edit** *or* **cancel+re-create** fallback |
-| Cancel an offer | 1 | ❌ path known (`marketplace/cancel-offer`), body unverified | DevTools capture |
+| Edit/raise an existing offer | 1 | ✅ **VERIFIED** (E8.1) — `marketplace/update-offer` `{buyer,currency,nftAddress,price,wallet}` is a real offer edit; make-offer body fixed (`cardId` was the missing field) | Done (DevTools capture 2026-06-07) |
+| Cancel an offer | 1 | ✅ **VERIFIED** (E8.1) — `marketplace/cancel-offer` `{coin,keepInEscrow,nftAddress,wallet}` (no offer id) | Done (DevTools capture 2026-06-07) |
 | Detect "sold / not sold" for a held card | 4, 5 | ❌ `checkListingStatus` returns only `{exists, marketplace, listing}` — no "sold" vocabulary | DevTools capture of the account/holdings or listing-detail endpoint |
 | Change a live listing price (markdown) | 5 | ❌ unverified (re-list / `marketplace/list`) | DevTools capture |
 | Read incoming offers for a held card | 5 | ❌ `getCardOffers` RPC name known, shape unverified | DevTools capture |
@@ -519,16 +519,23 @@ on the live path until Etappe 8 verifies the shapes.
 Gated entirely on DevTools captures; **reversible call first**.
 
 - **Work (in order):**
-  1. **Feature 1 (reversible) first:** capture a real `make-offer` + `cancel-offer`
-     (and confirm whether an offer *edit* exists or we must cancel→re-make).
-     Flip `docs/api.md` from `ASSUMED` → `VERIFIED`, enable the live `bump_offer` /
-     `cancel_offer` paths, run the reversible escrow **offer → bump → cancel** test
-     on a cheap card (escrow refunds — this also unblocks the make-offer item in
-     `docs/live-readiness-plan.md`).
+  1. ✅ **DONE (E8.1) — Feature 1 (reversible) offer lifecycle wired live.**
+     DevTools captures (2026-06-07) verified `make-offer`
+     (`{cardId,currency,nftAddress,price,wallet}` — `cardId` was the missing 400
+     field), `update-offer` (the real **edit**/bump endpoint —
+     `{buyer,currency,nftAddress,price,wallet}`), `cancel-offer`
+     (`{coin,keepInEscrow,nftAddress,wallet}`, no offer id) and the `broadcast`
+     response (`{success,signature,message}`). `docs/api.md` flipped
+     ASSUMED→VERIFIED; `card_id` is threaded normalize→order→store (new column +
+     migration); the live `bump_offer` (update-offer) and `cancel_offer` paths are
+     enabled via a raw sign+broadcast helper (a resting `OPEN` offer never passes
+     through `SIGNED`). Still pending here: the **reversible escrow offer → bump →
+     cancel** test on a cheap real card (tiny supervised amount).
   2. Capture the **sold/not-sold** signal source (which endpoint authoritatively
      says a held card sold — drives Features 4 & 5 triggers) and wire the trigger.
   3. Capture `update-listing`, `getCardOffers`, `accept-offer`; enable the markdown
-     and offer-accept live paths.
+     and offer-accept live paths (LiveExecutor `markdown_listing` / `accept_offer`
+     stay safe-failure no-ops until then).
   4. Decide & wire the **§9 market-value source** for held cards (5/5b), then enable
      `_run_market_recheck`'s live read.
   - Each capture flips exactly one seam method to `VERIFIED` with a test asserting

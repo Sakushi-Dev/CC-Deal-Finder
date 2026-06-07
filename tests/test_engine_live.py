@@ -21,8 +21,9 @@ from collectorcrypt.trader.executor import DryRunExecutor, LiveExecutor
 from collectorcrypt.trader.orders import OrderKind, OrderStatus
 from collectorcrypt.trader.store import Holding
 
-from .conftest import (FakeSessionProvider, FakeWallet, make_buy, make_config,
-                       make_list, make_offer, new_keypair, keypair_secret)
+from .conftest import (FakeClient, FakeSessionProvider, FakeWallet, make_buy,
+                       make_config, make_list, make_offer, new_keypair,
+                       keypair_secret)
 
 
 class FakeSourceClient:
@@ -301,20 +302,28 @@ def test_demo_cycle_no_maintenance_keys():
         assert key not in report
 
 
-def test_live_cycle_bumps_due_offer_safely(store):
-    # An aged OPEN offer is surfaced by the bump pass, but the live executor
-    # leaves it untouched (safe no-op) until Etappe 8 verifies the shape.
+def test_live_cycle_bumps_due_offer(store, monkeypatch):
+    # An aged OPEN offer is surfaced by the bump pass and bumped LIVE via the
+    # verified update-offer endpoint (Etappe 8). A resting offer never passes
+    # through SIGNED, so it stays OPEN at the higher price with bump_count++.
+    fake = FakeClient()
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
     _seed_aged_open_offer(store, nft="O1", price=8.0)
     engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
                         store=store)
     report = engine.run_cycle()
     assert len(report["bumped"]) == 1
     assert report["bumped"][0]["nft"] == "O1"
-    # Safe no-op: the persisted offer is unchanged (still OPEN, no bump).
+    assert report["bumped"][0]["bump_count"] == 1
+    # The live bump went out (update-offer -> broadcast) and was persisted.
+    assert "update_offer" in fake.call_names()
     persisted = store.open_offers()
     assert len(persisted) == 1
     assert persisted[0].status is OrderStatus.OPEN
-    assert persisted[0].bump_count == 0
+    assert persisted[0].bump_count == 1
+    # The persisted price is exactly the strategy's computed bump price.
+    assert persisted[0].price_usd == report["bumped"][0]["new_price_usd"]
 
 
 def test_halted_cycle_empties_send_passes_but_keeps_recheck(store):

@@ -50,6 +50,7 @@ logger = logging.getLogger("collectorcrypt.trader.ccapi")
 EP_RPC_V2 = "v2"                           # RPC dispatch endpoint
 EP_BUY = "marketplace/buy"                 # VERIFIED 201 -> bare base64 tx
 EP_MAKE_OFFER = "marketplace/make-offer"   # submit an offer -> returns tx
+EP_UPDATE_OFFER = "marketplace/update-offer"  # raise an existing offer -> tx
 EP_CANCEL_OFFER = "marketplace/cancel-offer"
 EP_LIST = "marketplace/list"               # list a card -> returns tx
 EP_UPDATE_LISTING = "marketplace/update-listing"
@@ -218,17 +219,52 @@ class CCTradingClient:
             body.update(extra)
         return self._request("POST", EP_BUY, auth=True, json=body)
 
-    def make_offer(self, *, nft: str, price: float, currency: str = "USDC",
+    def make_offer(self, *, nft: str, card_id: str, price: float,
+                   wallet: str, currency: str = "USDC",
                    extra: dict[str, Any] | None = None) -> dict[str, Any]:
         """Submit a standing offer (bid) below the ask. Returns a tx to sign.
 
-        ASSUMPTION: ``marketplace/make-offer`` mirrors ``buy`` but records a bid
-        the seller may later accept.
+        VERIFIED body (DevTools capture 2026-06-07):
+        ``{cardId, currency, nftAddress, price, wallet}``. ``cardId`` is the
+        card's internal CC id (raw card ``id``, e.g. ``"2024122019C5785"``) and
+        is **required** — sending only ``{nftAddress, price, currency}`` is
+        rejected with 400. The response is a bare base64 ``VersionedTransaction``
+        string (same envelope as ``buy``) for the bidder to sign and broadcast.
+        State-changing, so it is never auto-retried.
         """
-        body = {"nftAddress": nft, "price": price, "currency": currency}
+        body: dict[str, Any] = {
+            "cardId": card_id,
+            "currency": currency,
+            "nftAddress": nft,
+            "price": price,
+            "wallet": wallet,
+        }
         if extra:
             body.update(extra)
         return self._request("POST", EP_MAKE_OFFER, auth=True, json=body)
+
+    def update_offer(self, *, nft: str, price: float, wallet: str,
+                     currency: str = "USDC",
+                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Raise the price of an existing standing offer (offer penetration).
+
+        VERIFIED body (DevTools capture 2026-06-07):
+        ``{buyer, currency, nftAddress, price, wallet}`` where ``buyer`` and
+        ``wallet`` are both the bidder's address. This is a real offer **edit**
+        (a single re-notification of the owner) rather than a cancel+remake,
+        and returns a bare base64 transaction to sign and broadcast.
+        State-changing, so it is never auto-retried.
+        """
+        body: dict[str, Any] = {
+            "buyer": wallet,
+            "currency": currency,
+            "nftAddress": nft,
+            "price": price,
+            "wallet": wallet,
+        }
+        if extra:
+            body.update(extra)
+        return self._request("POST", EP_UPDATE_OFFER, auth=True, json=body)
 
     def create_listing(self, *, nft: str, price: float, currency: str = "USDC",
                        extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -247,9 +283,26 @@ class CCTradingClient:
             body["id"] = listing_id
         return self._request("POST", EP_CANCEL_LISTING, auth=True, json=body)
 
-    def cancel_offer(self, *, offer_id: str) -> dict[str, Any]:
-        return self._request("POST", EP_CANCEL_OFFER, auth=True,
-                             json={"id": offer_id})
+    def cancel_offer(self, *, nft: str, wallet: str, currency: str = "USDC",
+                     keep_in_escrow: bool = False,
+                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Withdraw a standing offer; the escrowed funds are refunded.
+
+        VERIFIED body (DevTools capture 2026-06-07):
+        ``{coin, keepInEscrow, nftAddress, wallet}`` — note the currency field
+        is ``coin`` (not ``currency``) and there is **no** offer id; the offer
+        is identified by ``nftAddress`` + ``wallet``. Returns a bare base64
+        transaction to sign and broadcast. State-changing, never auto-retried.
+        """
+        body: dict[str, Any] = {
+            "coin": currency,
+            "keepInEscrow": keep_in_escrow,
+            "nftAddress": nft,
+            "wallet": wallet,
+        }
+        if extra:
+            body.update(extra)
+        return self._request("POST", EP_CANCEL_OFFER, auth=True, json=body)
 
     def update_listing(self, *, nft: str, price: float, currency: str = "USDC",
                        extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -290,8 +343,10 @@ class CCTradingClient:
         """Broadcast a locally-signed transaction.
 
         VERIFIED body (from the bundle): ``{signedTransaction, wallet,
-        nftAddress?}``. This is the only step that finalises a trade on-chain,
-        so it is never retried automatically.
+        nftAddress?}``. VERIFIED response (DevTools capture 2026-06-07):
+        ``{"success": true, "signature": "<sig>", "message": "..."}``. This is
+        the only step that finalises a trade on-chain, so it is never retried
+        automatically.
         """
         body: dict[str, Any] = {"signedTransaction": signed_tx}
         if wallet:

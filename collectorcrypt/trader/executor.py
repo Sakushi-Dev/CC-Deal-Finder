@@ -218,11 +218,18 @@ class LiveExecutor:
         if not self._preflight(order, order.price_usd):
             return order
 
+        # The verified make-offer body requires the card's internal CC id; an
+        # offer without it would be rejected with 400, so fail safely (no spend,
+        # no broadcast) before touching the client.
+        if not order.card_id:
+            self._fail(order, "offer missing card_id (cannot build make-offer)")
+            return order
+
         order.transition(OrderStatus.SUBMITTED, detail="submitting offer")
         self._persist(order)
         resp = self._client.make_offer(
-            nft=order.nft, price=order.price_usd,
-            currency=order.currency or "USDC",
+            nft=order.nft, card_id=order.card_id, price=order.price_usd,
+            wallet=self._wallet.address, currency=order.currency or "USDC",
         )
         tx = _extract_tx(resp)
         external_id = _extract_external_id(resp)
@@ -287,20 +294,84 @@ class LiveExecutor:
             return order
 
     # ------------------------------------------------------------------ #
-    # Maintenance (ETAPPE 6) — SAFE-FAILURE until ETAPPE 8 verifies the shapes
+    # Maintenance (ETAPPE 6/8)
     # ------------------------------------------------------------------ #
-    # Offer bump/cancel, listing markdown and offer accept all depend on CC
-    # request shapes that are still ASSUMED (see docs/api.md). Per the project
-    # rule "no assumed shape is wired into the live path", these live methods
-    # do NOT touch the client, sign anything, or move money yet: they leave the
-    # order untouched and report a safe no-op. ETAPPE 8 fills in the real
-    # cancel+resubmit / update-listing / accept-offer flows once captured, using
-    # the DryRunExecutor simulations above as the reference transition shapes.
-    def bump_offer(self, order: Order, new_price: float) -> Order:
-        return self._maintenance_safe_noop(order, "offer bump")
+    # Offer bump/cancel are LIVE (ETAPPE 8): their request shapes are verified
+    # from DevTools captures (update-offer / cancel-offer). Listing markdown and
+    # offer accept stay SAFE-FAILURE because their shapes are still ASSUMED (see
+    # docs/api.md) — per the rule "no assumed shape is wired into the live path",
+    # those leave the order untouched and report a safe no-op until captured.
+    def bump_offer(self, order: Order, new_price: float, *,
+                   now: float | None = None) -> Order:
+        """Raise an open offer's bid via the verified ``update-offer`` endpoint.
+
+        ``update-offer`` returns a fresh transaction to sign + broadcast. A
+        resting OPEN offer must NOT pass through ``SIGNED`` (the state machine
+        forbids ``OPEN -> SIGNED``), so this uses a raw sign+broadcast that
+        performs no order transition: on success the offer stays OPEN at the
+        higher price with an incremented bump count; on any failure it stays
+        OPEN at the old price for a later retry. Never raises.
+        """
+        if not getattr(self._wallet, "can_sign", False):
+            order.detail = "offer bump skipped: live executor cannot sign"
+            return order
+        try:
+            resp = self._client.update_offer(
+                nft=order.nft, price=float(new_price),
+                wallet=self._wallet.address,
+                currency=order.currency or "USDC",
+            )
+        except CCApiError as exc:
+            order.detail = f"offer bump failed: {exc}"
+            logger.info("Live offer bump failed (nft=%s): %s", order.nft, exc)
+            return order
+        tx = _extract_tx(resp)
+        if not tx:
+            order.detail = "offer bump returned no transaction to sign"
+            return order
+        ok, signature = self._raw_sign_broadcast(order, tx, action="offer bump")
+        if not ok:
+            return order
+        order.price_usd = float(new_price)
+        order.bump_count += 1
+        order.last_bump_at = time.time() if now is None else float(now)
+        if signature:
+            order.signature = signature
+        order.detail = f"bumped offer to {order.price_usd}"
+        self._persist(order)
+        return order
 
     def cancel_offer(self, order: Order) -> Order:
-        return self._maintenance_safe_noop(order, "offer cancel")
+        """Withdraw an open offer via the verified ``cancel-offer`` endpoint.
+
+        ``cancel-offer`` returns a transaction to sign + broadcast; on success
+        the order transitions ``OPEN -> CANCELLED`` (the escrowed funds refund).
+        On any failure the offer is left OPEN for a later attempt. Never raises.
+        """
+        if not getattr(self._wallet, "can_sign", False):
+            order.detail = "offer cancel skipped: live executor cannot sign"
+            return order
+        try:
+            resp = self._client.cancel_offer(
+                nft=order.nft, wallet=self._wallet.address,
+                currency=order.currency or "USDC",
+            )
+        except CCApiError as exc:
+            order.detail = f"offer cancel failed: {exc}"
+            logger.info("Live offer cancel failed (nft=%s): %s", order.nft, exc)
+            return order
+        tx = _extract_tx(resp)
+        if not tx:
+            order.detail = "offer cancel returned no transaction to sign"
+            return order
+        ok, signature = self._raw_sign_broadcast(order, tx, action="offer cancel")
+        if not ok:
+            return order
+        order.transition(OrderStatus.CANCELLED,
+                         detail="cancelled offer (escrow refunded)",
+                         signature=signature or order.signature)
+        self._persist(order)
+        return order
 
     def markdown_listing(self, order: Order, new_price: float) -> Order:
         return self._maintenance_safe_noop(order, "listing markdown")
@@ -319,6 +390,33 @@ class LiveExecutor:
         order.detail = detail
         logger.info("Live maintenance no-op: %s (nft=%s)", detail, order.nft)
         return order
+
+    def _raw_sign_broadcast(self, order: Order, tx: str, *,
+                            action: str) -> tuple[bool, str]:
+        """Sign ``tx`` and broadcast it WITHOUT any order transition.
+
+        Used for maintenance on a resting OPEN offer (bump/cancel) where the
+        state machine forbids the ``OPEN -> SIGNED`` step that
+        :meth:`_sign_and_broadcast` relies on. Returns ``(ok, signature)``;
+        ``ok`` is False on a signing or broadcast error (the caller then leaves
+        the order in place). Broadcasts are never auto-retried. Never raises.
+        """
+        try:
+            signed = self._wallet.sign_transaction(tx)
+        except WalletError as exc:
+            order.detail = f"{action} signing failed: {exc}"
+            logger.info("Live %s signing failed (nft=%s): %s",
+                        action, order.nft, exc)
+            return False, ""
+        try:
+            resp = self._client.broadcast(
+                signed_tx=signed, wallet=self._wallet.address, nft=order.nft)
+        except CCApiError as exc:
+            order.detail = f"{action} broadcast failed: {exc}"
+            logger.info("Live %s broadcast failed (nft=%s): %s",
+                        action, order.nft, exc)
+            return False, ""
+        return True, _extract_signature(resp)
 
     # ------------------------------------------------------------------ #
     # Shared sign + broadcast

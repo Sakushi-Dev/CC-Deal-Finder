@@ -154,6 +154,12 @@ class Order:
     client_order_id: str = ""
     parent_id: str = ""          # links a LIST order back to its BUY order
 
+    # CC internal card identifier (raw card ``id``, e.g. "2024122019C5785").
+    # Required by the verified ``marketplace/make-offer`` body; captured at
+    # planning time so the offer can be submitted later from a self-contained
+    # record.
+    card_id: str = ""
+
     # External references, filled during execution / reconciliation.
     external_id: str = ""        # CC receipt / listing / offer id
     signature: str = ""          # Solana transaction signature
@@ -250,6 +256,7 @@ class Order:
             "kind": self.kind.value,
             "status": self.status.value,
             "nft": self.nft,
+            "card_id": self.card_id,
             "name": self.name,
             "category": self.category,
             "currency": self.currency,
@@ -285,6 +292,7 @@ class Order:
             cycle_id=data.get("cycle_id", ""),
             client_order_id=data.get("client_order_id", ""),
             parent_id=data.get("parent_id", ""),
+            card_id=data.get("card_id", ""),
             external_id=data.get("external_id", ""),
             signature=data.get("signature", ""),
             error=data.get("error", ""),
@@ -312,6 +320,7 @@ def plan_to_orders(plan: BuyPlan, cycle_id: str, *,
         orders.append(Order(
             kind=OrderKind.BUY,
             nft=item.nft,
+            card_id=item.card.get("card_id", ""),
             name=item.name,
             category=item.card.get("category", ""),
             currency=item.card.get("currency", ""),
@@ -326,6 +335,7 @@ def plan_to_orders(plan: BuyPlan, cycle_id: str, *,
         orders.append(Order(
             kind=OrderKind.OFFER,
             nft=cand.nft,
+            card_id=cand.card.get("card_id", ""),
             name=cand.name,
             category=cand.card.get("category", ""),
             currency=cand.card.get("currency", ""),
@@ -343,6 +353,7 @@ def relist_order_for(buy: Order) -> Order:
     return Order(
         kind=OrderKind.LIST,
         nft=buy.nft,
+        card_id=buy.card_id,
         name=buy.name,
         category=buy.category,
         currency=buy.currency,

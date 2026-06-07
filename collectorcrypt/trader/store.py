@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS orders (
     kind            TEXT NOT NULL,
     status          TEXT NOT NULL,
     nft             TEXT,
+    card_id         TEXT,
     name            TEXT,
     category        TEXT,
     currency        TEXT,
@@ -114,6 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_holdings_blacklisted ON holdings(blacklisted);
 _ORDER_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("bump_count", "INTEGER DEFAULT 0"),
     ("last_bump_at", "REAL"),
+    ("card_id", "TEXT"),
 )
 
 _ORDER_COLUMNS = (
@@ -121,6 +123,7 @@ _ORDER_COLUMNS = (
     "nft", "name", "category", "currency", "price_usd", "market_usd",
     "resell_usd", "simulated", "external_id", "signature", "error", "detail",
     "created_at", "updated_at", "history_json", "bump_count", "last_bump_at",
+    "card_id",
 )
 
 _HOLDING_COLUMNS = (
@@ -299,7 +302,7 @@ class OrderStore:
             1 if d["simulated"] else 0, d["external_id"], d["signature"],
             d["error"], d["detail"], d["created_at"], d["updated_at"],
             json.dumps(d["history"], ensure_ascii=False),
-            d["bump_count"], d["last_bump_at"],
+            d["bump_count"], d["last_bump_at"], d["card_id"],
         )
         # Conflict may arise on the primary key (id) or the unique
         # client_order_id; update the lifecycle/reference columns either way.
@@ -308,12 +311,13 @@ class OrderStore:
             "(id, client_order_id, cycle_id, parent_id, kind, status, nft, "
             " name, category, currency, price_usd, market_usd, resell_usd, "
             " simulated, external_id, signature, error, detail, created_at, "
-            " updated_at, history_json, bump_count, last_bump_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            " updated_at, history_json, bump_count, last_bump_at, card_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(client_order_id) DO UPDATE SET "
             "status=excluded.status, parent_id=excluded.parent_id, "
             "external_id=excluded.external_id, signature=excluded.signature, "
             "error=excluded.error, detail=excluded.detail, "
+            "price_usd=excluded.price_usd, "
             "updated_at=excluded.updated_at, history_json=excluded.history_json, "
             "bump_count=excluded.bump_count, last_bump_at=excluded.last_bump_at",
             row,
@@ -631,6 +635,15 @@ class OrderStore:
         return [_row_to_holding(r) for r in rows]
 
 
+def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """Read ``key`` from a row, tolerating a column absent on an old DB."""
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return default
+    return default if value is None else value
+
+
 def _row_to_order(row: sqlite3.Row) -> Order:
     try:
         history = json.loads(row["history_json"] or "[]")
@@ -644,6 +657,7 @@ def _row_to_order(row: sqlite3.Row) -> Order:
         "kind": row["kind"],
         "status": row["status"],
         "nft": row["nft"],
+        "card_id": _row_get(row, "card_id", ""),
         "name": row["name"],
         "category": row["category"],
         "currency": row["currency"],

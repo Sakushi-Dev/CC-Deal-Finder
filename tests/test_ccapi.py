@@ -188,9 +188,20 @@ def test_initiate_buy_funding_source_escrow():
 
 def test_make_offer_body():
     client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.make_offer(nft="NFT", price=8.0)
-    assert http.calls[0]["json"] == {"nftAddress": "NFT", "price": 8.0,
-                                     "currency": "USDC"}
+    client.make_offer(nft="NFT", card_id="CARD1", price=8.0, wallet="W")
+    assert http.calls[0]["url"].endswith("marketplace/make-offer")
+    assert http.calls[0]["json"] == {"cardId": "CARD1", "currency": "USDC",
+                                     "nftAddress": "NFT", "price": 8.0,
+                                     "wallet": "W"}
+
+
+def test_update_offer_body():
+    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
+    client.update_offer(nft="NFT", price=9.5, wallet="W")
+    assert http.calls[0]["url"].endswith("marketplace/update-offer")
+    assert http.calls[0]["json"] == {"buyer": "W", "currency": "USDC",
+                                     "nftAddress": "NFT", "price": 9.5,
+                                     "wallet": "W"}
 
 
 def test_create_listing_body():
@@ -220,9 +231,20 @@ def test_cancel_listing_body():
 
 
 def test_cancel_offer_body():
-    client, http = make_client([FakeResponse(200, {"ok": True})])
-    client.cancel_offer(offer_id="O1")
-    assert http.calls[0]["json"] == {"id": "O1"}
+    client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
+    client.cancel_offer(nft="NFT", wallet="W")
+    assert http.calls[0]["url"].endswith("marketplace/cancel-offer")
+    assert http.calls[0]["json"] == {"coin": "USDC", "keepInEscrow": False,
+                                     "nftAddress": "NFT", "wallet": "W"}
+
+
+def test_broadcast_parses_success_and_signature():
+    client, http = make_client([FakeResponse(
+        200, {"success": True, "signature": "SIG9",
+              "message": "Transaction broadcast successfully"})])
+    resp = client.broadcast(signed_tx="SIGNEDTX", wallet="W", nft="N")
+    assert resp["success"] is True
+    assert resp["signature"] == "SIG9"
 
 
 def test_update_listing_body():
@@ -377,7 +399,9 @@ def test_read_exhausts_max_retries():
 
 @pytest.mark.parametrize("call", [
     lambda c: c.initiate_buy(nft="N", price=1.0, wallet="W"),
-    lambda c: c.make_offer(nft="N", price=1.0),
+    lambda c: c.make_offer(nft="N", card_id="C", price=1.0, wallet="W"),
+    lambda c: c.update_offer(nft="N", price=1.0, wallet="W"),
+    lambda c: c.cancel_offer(nft="N", wallet="W"),
     lambda c: c.create_listing(nft="N", price=1.0),
     lambda c: c.broadcast(signed_tx="S"),
 ])
@@ -390,7 +414,9 @@ def test_write_never_retries_on_5xx(call):
 
 @pytest.mark.parametrize("call", [
     lambda c: c.initiate_buy(nft="N", price=1.0, wallet="W"),
-    lambda c: c.make_offer(nft="N", price=1.0),
+    lambda c: c.make_offer(nft="N", card_id="C", price=1.0, wallet="W"),
+    lambda c: c.update_offer(nft="N", price=1.0, wallet="W"),
+    lambda c: c.cancel_offer(nft="N", wallet="W"),
     lambda c: c.broadcast(signed_tx="S"),
 ])
 def test_write_never_retries_on_429(call):

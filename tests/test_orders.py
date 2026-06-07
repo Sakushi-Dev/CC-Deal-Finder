@@ -241,8 +241,9 @@ def test_from_dict_defaults_missing_fields():
 # --------------------------------------------------------------------------- #
 # plan_to_orders / relist_order_for
 # --------------------------------------------------------------------------- #
-def _candidate(nft="N", ask=10.0, market=20.0, resell=18.0):
-    return Candidate(card={"nft": nft, "name": nft, "category": "Pokemon"},
+def _candidate(nft="N", ask=10.0, market=20.0, resell=18.0, card_id="CID"):
+    return Candidate(card={"nft": nft, "name": nft, "category": "Pokemon",
+                           "card_id": card_id},
                      ask_usd=ask, market_usd=market, discount_pct=50.0,
                      resell_usd=resell)
 
@@ -254,6 +255,14 @@ def test_plan_to_orders_builds_buys_and_offers():
     orders = plan_to_orders(plan, "cyc", simulated=False)
     kinds = sorted(o.kind.value for o in orders)
     assert kinds == ["buy", "offer"]
+
+
+def test_plan_to_orders_threads_card_id_into_offer():
+    plan = BuyPlan(offers=[Offer(_candidate("B", card_id="2024122019C5785"),
+                                 8.0)])
+    [offer] = plan_to_orders(plan, "cyc", simulated=False)
+    assert offer.kind is OrderKind.OFFER
+    assert offer.card_id == "2024122019C5785"
 
 
 def test_plan_to_orders_never_creates_list_orders():

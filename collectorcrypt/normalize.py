@@ -51,6 +51,7 @@ def normalize_card(card: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "name": item_name,
+        "card_id": card.get("id", "") or "",
         "card_name": card_name,
         "card_number": card_number,
         "language": language,

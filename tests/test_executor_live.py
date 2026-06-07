@@ -243,8 +243,31 @@ def test_offer_filled_confirms():
 def test_offer_calls_make_offer():
     client = FakeClient()
     executor = make_live(client=client)
-    executor.execute([make_offer(price_usd=8, market_usd=20)])
+    executor.execute([make_offer(nft="N", price_usd=8, market_usd=20)])
     assert "make_offer" in client.call_names()
+
+
+def test_offer_make_offer_body_has_card_id_and_wallet():
+    client = FakeClient()
+    wallet = FakeWallet(can_sign=True)
+    executor = make_live(client=client, wallet=wallet)
+    executor.execute([make_offer(nft="NFT9", card_id="CARDXYZ",
+                                 price_usd=8, market_usd=20, currency="USDC")])
+    call = next(kw for name, kw in client.calls if name == "make_offer")
+    assert call["card_id"] == "CARDXYZ"
+    assert call["nft"] == "NFT9"
+    assert call["wallet"] == wallet.address
+    assert call["currency"] == "USDC"
+
+
+def test_offer_without_card_id_fails_safely():
+    client = FakeClient()
+    executor = make_live(client=client)
+    [offer] = executor.execute([make_offer(nft="N", card_id="",
+                                           price_usd=8, market_usd=20)])
+    assert offer.status is OrderStatus.FAILED
+    assert client.calls == []                 # nothing sent, no money moved
+    assert "card_id" in offer.detail
 
 
 def test_offer_no_tx_fails():
@@ -441,10 +464,11 @@ def test_holdings_write_failure_does_not_abort_buy(store, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Maintenance (ETAPPE 6)
+# Maintenance (ETAPPE 6/8)
 # --------------------------------------------------------------------------- #
-# DryRunExecutor simulates the transitions; LiveExecutor is safe-failure
-# (no client call, no money, order untouched) until ETAPPE 8 verifies shapes.
+# DryRunExecutor simulates the transitions. LiveExecutor offer bump/cancel are
+# LIVE (ETAPPE 8, verified update-offer / cancel-offer shapes); listing markdown
+# and offer accept stay safe-failure (shapes still ASSUMED).
 def _open_offer(nft="N", price=8.0, market=20.0, bump_count=0):
     o = make_offer(nft=nft, price_usd=price, market_usd=market, cycle_id="c")
     o.bump_count = bump_count
@@ -480,24 +504,120 @@ def test_dryrun_accept_offer_confirms():
     assert out.status is OrderStatus.CONFIRMED
 
 
-def test_live_bump_offer_is_safe_noop():
+# -- live offer bump (verified update-offer) -------------------------------- #
+def test_live_bump_offer_raises_price_and_stays_open():
+    client = FakeClient()
+    executor = make_live(client=client)
+    o = _open_offer(price=8.0, bump_count=1)
+    out = executor.bump_offer(o, 8.10, now=1000.0)
+    assert out.status is OrderStatus.OPEN     # never transitions OPEN->SIGNED
+    assert out.price_usd == 8.10
+    assert out.bump_count == 2
+    assert out.last_bump_at == 1000.0
+
+
+def test_live_bump_offer_calls_update_then_broadcast():
     client = FakeClient()
     executor = make_live(client=client)
     o = _open_offer(price=8.0)
+    executor.bump_offer(o, 8.10)
+    assert client.call_names() == ["update_offer", "broadcast"]
+
+
+def test_live_bump_offer_update_body_has_wallet_and_price():
+    client = FakeClient()
+    wallet = FakeWallet(can_sign=True)
+    executor = make_live(client=client, wallet=wallet)
+    o = _open_offer(nft="NFT5", price=8.0)
+    executor.bump_offer(o, 9.25)
+    call = next(kw for name, kw in client.calls if name == "update_offer")
+    assert call["nft"] == "NFT5"
+    assert call["price"] == 9.25
+    assert call["wallet"] == wallet.address
+
+
+def test_live_bump_offer_records_signature():
+    client = FakeClient()
+    client.broadcast_response = {"success": True, "signature": "BUMPSIG"}
+    executor = make_live(client=client)
+    o = _open_offer(price=8.0)
     out = executor.bump_offer(o, 8.10)
-    assert out.status is OrderStatus.OPEN     # untouched
-    assert out.price_usd == 8.0               # no bump applied
-    assert client.calls == []                 # no client call
-    assert "not verified" in out.detail
+    assert out.signature == "BUMPSIG"
 
 
-def test_live_cancel_offer_is_safe_noop():
+def test_live_bump_offer_no_tx_leaves_offer_unchanged():
+    client = FakeClient()
+    client.responses["update_offer"] = {"nope": True}  # no transaction
+    executor = make_live(client=client)
+    o = _open_offer(price=8.0, bump_count=2)
+    out = executor.bump_offer(o, 8.10)
+    assert out.status is OrderStatus.OPEN
+    assert out.price_usd == 8.0               # not bumped
+    assert out.bump_count == 2
+    assert client.count("broadcast") == 0
+
+
+def test_live_bump_offer_broadcast_error_leaves_offer_open_no_retry():
+    client = FakeClient()
+    client.errors["broadcast"] = CCServerError("5xx")
+    executor = make_live(client=client)
+    o = _open_offer(price=8.0)
+    out = executor.bump_offer(o, 8.10)
+    assert out.status is OrderStatus.OPEN     # still resting at the old price
+    assert out.price_usd == 8.0
+    assert client.count("broadcast") == 1     # never retried
+
+
+def test_live_bump_offer_sign_failure_leaves_offer_open():
+    client = FakeClient()
+    executor = make_live(client=client,
+                         wallet=FakeWallet(can_sign=True, sign_error=True))
+    o = _open_offer(price=8.0)
+    out = executor.bump_offer(o, 8.10)
+    assert out.status is OrderStatus.OPEN
+    assert out.price_usd == 8.0
+    assert client.count("broadcast") == 0
+
+
+# -- live offer cancel (verified cancel-offer) ------------------------------ #
+def test_live_cancel_offer_cancels():
     client = FakeClient()
     executor = make_live(client=client)
     o = _open_offer()
     out = executor.cancel_offer(o)
-    assert out.status is OrderStatus.OPEN     # not cancelled live yet
-    assert client.calls == []
+    assert out.status is OrderStatus.CANCELLED
+    assert client.call_names() == ["cancel_offer", "broadcast"]
+
+
+def test_live_cancel_offer_body_has_nft_and_wallet():
+    client = FakeClient()
+    wallet = FakeWallet(can_sign=True)
+    executor = make_live(client=client, wallet=wallet)
+    o = _open_offer(nft="NFT7")
+    executor.cancel_offer(o)
+    call = next(kw for name, kw in client.calls if name == "cancel_offer")
+    assert call["nft"] == "NFT7"
+    assert call["wallet"] == wallet.address
+
+
+def test_live_cancel_offer_broadcast_error_leaves_offer_open_no_retry():
+    client = FakeClient()
+    client.errors["broadcast"] = CCServerError("5xx")
+    executor = make_live(client=client)
+    o = _open_offer()
+    out = executor.cancel_offer(o)
+    assert out.status is OrderStatus.OPEN     # still resting, escrow intact
+    assert client.count("broadcast") == 1     # never retried
+
+
+def test_live_cancel_offer_no_tx_leaves_offer_open():
+    client = FakeClient()
+    client.responses["cancel_offer"] = {"nope": True}  # no transaction
+    executor = make_live(client=client)
+    o = _open_offer()
+    out = executor.cancel_offer(o)
+    assert out.status is OrderStatus.OPEN
+    assert client.count("broadcast") == 0
 
 
 def test_live_markdown_listing_is_safe_noop():

@@ -457,7 +457,8 @@ Auth: `Authorization: Bearer <privy-jwt>` plus `Origin: https://collectorcrypt.c
 3. **Sign** — done locally by `Wallet.sign_transaction` (`solders`,
    base64 `VersionedTransaction`). No key ever leaves the process.
 
-4. **Broadcast** — `POST marketplace/broadcast` (body from the bundle):
+4. **Broadcast** — ✅ **VERIFIED HTTP 200** (DevTools capture 2026-06-07)
+   `POST marketplace/broadcast`:
 
    ```jsonc
    { "signedTransaction": "<base64 signed tx>", "wallet": "<wallet>",
@@ -465,15 +466,66 @@ Auth: `Authorization: Bearer <privy-jwt>` plus `Origin: https://collectorcrypt.c
    ```
 
    The old assumption (`{ signedTransaction }` only) was **missing `wallet`**.
-   This is the only step that finalises a trade, so it is **never retried**.
+   Response is JSON:
+
+   ```jsonc
+   { "success": true, "signature": "<sig>",
+     "message": "Transaction broadcast successfully" }
+   ```
+
+   `_is_confirmed` reads the `success` flag; `_extract_signature` reads
+   `signature`. This is the only step that finalises a trade, so it is
+   **never retried**.
+
+#### Offer lifecycle (VERIFIED — DevTools capture 2026-06-07)
+
+These are the money-moving offer-penetration writes (Etappe 8.1). Each returns a
+**bare base64 transaction** to sign + broadcast; a resting `OPEN` offer never
+passes through `SIGNED`, so bump/cancel sign+broadcast **without** an order
+transition (only make-offer uses the full SUBMITTED→…→OPEN flow).
+
+5. **Make offer (prepare)** — ✅ **VERIFIED**
+   `POST marketplace/make-offer`:
+
+   ```jsonc
+   { "cardId": "<raw CC card id, e.g. 2024122019C5785>", "currency": "USDC",
+     "nftAddress": "<nft>", "price": 8, "wallet": "<bidder wallet>" }
+   ```
+
+   `cardId` is the card's internal CC id (the raw card top-level `id`) and is
+   **required** — the old body `{ nftAddress, price, currency }` was rejected
+   with **HTTP 400**. Response is a bare base64 tx.
+
+6. **Update offer (bump)** — ✅ **VERIFIED**
+   `POST marketplace/update-offer`:
+
+   ```jsonc
+   { "buyer": "<bidder wallet>", "currency": "USDC", "nftAddress": "<nft>",
+     "price": 9, "wallet": "<bidder wallet>" }
+   ```
+
+   `buyer` and `wallet` are both the bidder's address. This is a real offer
+   **edit** (one re-notification of the owner), answering the §9.2 open
+   question — bumping is *not* cancel+remake. Response is a bare base64 tx.
+
+7. **Cancel offer** — ✅ **VERIFIED**
+   `POST marketplace/cancel-offer`:
+
+   ```jsonc
+   { "coin": "USDC", "keepInEscrow": false, "nftAddress": "<nft>",
+     "wallet": "<bidder wallet>" }
+   ```
+
+   The currency field is **`coin`** (not `currency`) and there is **no offer
+   id** — the offer is keyed by `nftAddress` + `wallet`. The old body
+   `{ "id": <offer_id> }` was wrong. Response is a bare base64 tx.
 
 #### Open / unverified (trading)
 
-- The **broadcast response** shape (signature / receipt keys) — not probed (would
-  require signing+broadcasting a real tx = a real purchase).
-- The **offer / list / cancel** bodies (`marketplace/make-offer`,
-  `marketplace/list`, `createMakeOfferTx`, etc.) — paths confirmed from the
-  bundle map, bodies not yet probed.
+- The **listing markdown** body (`marketplace/update-listing`) and **accept-offer**
+  body (`marketplace/accept-offer`) — paths confirmed from the bundle map, bodies
+  not yet probed (these LiveExecutor methods stay safe-failure no-ops).
+- `getCardOffers` (RPC root) response shape — not probed.
 - The `checkListingStatus` **status vocabulary** when a listing *is* active
   (probed listing returned `exists:false` for our wallet).
 

@@ -233,13 +233,23 @@ class FakeClient:
             "initiate_buy",
             {"transaction": "UNSIGNED-BUY-TX", "receiptId": "rcpt-1"})
 
-    def make_offer(self, *, nft, price, currency="USDC", extra=None):
-        self._record("make_offer", nft=nft, price=price, currency=currency,
-                     extra=extra)
+    def make_offer(self, *, nft, card_id="", price, wallet="", currency="USDC",
+                   extra=None):
+        self._record("make_offer", nft=nft, card_id=card_id, price=price,
+                     wallet=wallet, currency=currency, extra=extra)
         self._maybe_raise("make_offer")
         return self.responses.get(
             "make_offer",
             {"transaction": "UNSIGNED-OFFER-TX", "offerId": "offer-1"})
+
+    def update_offer(self, *, nft, price, wallet="", currency="USDC",
+                     extra=None):
+        self._record("update_offer", nft=nft, price=price, wallet=wallet,
+                     currency=currency, extra=extra)
+        self._maybe_raise("update_offer")
+        return self.responses.get(
+            "update_offer",
+            {"transaction": "UNSIGNED-UPDATE-OFFER-TX"})
 
     def create_listing(self, *, nft, price, currency="USDC", extra=None):
         self._record("create_listing", nft=nft, price=price, currency=currency,
@@ -260,10 +270,13 @@ class FakeClient:
         self._maybe_raise("cancel_listing")
         return self.responses.get("cancel_listing", {"status": "ok"})
 
-    def cancel_offer(self, *, offer_id):
-        self._record("cancel_offer", offer_id=offer_id)
+    def cancel_offer(self, *, nft="", wallet="", currency="USDC",
+                     keep_in_escrow=False, extra=None):
+        self._record("cancel_offer", nft=nft, wallet=wallet, currency=currency,
+                     keep_in_escrow=keep_in_escrow, extra=extra)
         self._maybe_raise("cancel_offer")
-        return self.responses.get("cancel_offer", {"status": "ok"})
+        return self.responses.get(
+            "cancel_offer", {"transaction": "UNSIGNED-CANCEL-OFFER-TX"})
 
     # -- reads ------------------------------------------------------------- #
     def check_listing_status(self, *, nft, wallet):
@@ -339,6 +352,9 @@ def make_buy(**kw: Any) -> Order:
 
 
 def make_offer(**kw: Any) -> Order:
+    # A real offer always carries the card's internal CC id (required by the
+    # verified make-offer body); default it so live-path tests pass the guard.
+    kw.setdefault("card_id", "CARD123")
     return make_order(OrderKind.OFFER, **kw)
 
 

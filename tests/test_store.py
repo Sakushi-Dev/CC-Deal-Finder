@@ -298,6 +298,37 @@ def test_order_bump_fields_update_on_upsert(store):
     assert got.last_bump_at == 999.0
 
 
+def test_order_price_update_persists_on_upsert(store):
+    # A bump raises an open offer's price; the new price must survive the
+    # ON CONFLICT update path (not just on first insert).
+    o = make_offer(nft="N", price_usd=8.0, cycle_id="c")
+    store.upsert_order(o)
+    o.price_usd = 8.40
+    o.bump_count = 1
+    store.upsert_order(o)
+    got = store.get_by_client_order_id(o.client_order_id)
+    assert got.price_usd == 8.40
+    assert got.bump_count == 1
+
+
+# --------------------------------------------------------------------------- #
+# card_id column on orders (verified make-offer body)
+# --------------------------------------------------------------------------- #
+def test_order_card_id_roundtrip(store):
+    o = make_offer(nft="N", card_id="2024122019C5785", cycle_id="c")
+    store.upsert_order(o)
+    got = store.get_by_client_order_id(o.client_order_id)
+    assert got.card_id == "2024122019C5785"
+
+
+def test_order_card_id_defaults_empty(store):
+    o = make_buy(nft="N", cycle_id="c")  # buys may carry no card_id
+    o.card_id = ""
+    store.upsert_order(o)
+    got = store.get_by_client_order_id(o.client_order_id)
+    assert got.card_id == ""
+
+
 # --------------------------------------------------------------------------- #
 # Holdings — upsert / read
 # --------------------------------------------------------------------------- #
@@ -492,3 +523,30 @@ def test_migration_adds_bump_columns_to_legacy_orders(tmp_path):
     o.bump_count = 3
     store.upsert_order(o)
     assert store.get_by_client_order_id(o.client_order_id).bump_count == 3
+
+
+def test_migration_adds_card_id_to_legacy_orders(tmp_path):
+    """A pre-existing orders table (no card_id) is migrated in place."""
+    import sqlite3
+
+    from collectorcrypt.trader.store import OrderStore
+
+    db = str(tmp_path / "legacy_card.db")
+    # Old DB shape: has bump columns but no card_id.
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE orders (id TEXT PRIMARY KEY, client_order_id TEXT UNIQUE,"
+        " cycle_id TEXT, parent_id TEXT, kind TEXT, status TEXT, nft TEXT,"
+        " name TEXT, category TEXT, currency TEXT, price_usd REAL,"
+        " market_usd REAL, resell_usd REAL, simulated INTEGER, external_id TEXT,"
+        " signature TEXT, error TEXT, detail TEXT, created_at REAL,"
+        " updated_at REAL, history_json TEXT, bump_count INTEGER,"
+        " last_bump_at REAL)"
+    )
+    conn.commit()
+    conn.close()
+    store = OrderStore(db)
+    o = make_offer(nft="N", card_id="2024122019C5785", cycle_id="c")
+    store.upsert_order(o)
+    got = store.get_by_client_order_id(o.client_order_id)
+    assert got.card_id == "2024122019C5785"
