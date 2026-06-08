@@ -212,8 +212,7 @@ Alternatively, on Windows double-click [`start.bat`](start.bat) — starts the a
 </details>
 <details>
 <summary><code>&nbsp;&nbsp;├────── TODO/</code>&nbsp;— planning & checklists</summary>
-<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── go-live-checklist.md      </code>&nbsp;— actionable punch list before live trading<br>
-<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── live-readiness-plan.md    </code>&nbsp;— full verification route + per-shape evidence<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── live-readiness-plan.md    </code>&nbsp;— verification route + go-live checklist (required vs optional)<br>
 <code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── holdings-lifecycle-plan.md</code><br>
 <code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── code-review-findings.md</code><br>
 </details>
@@ -365,9 +364,8 @@ money, the following **mandatory** steps remain:
 Full tracking in:
 
 - **[TODO/live-readiness-plan.md](TODO/live-readiness-plan.md)** — verification
-  route + per-shape evidence (single source of truth)
-- **[TODO/go-live-checklist.md](TODO/go-live-checklist.md)** — concise actionable
-  punch list
+  route, per-shape evidence, and the go-live checklist split into *required* vs
+  *optional* (single source of truth)
 
 > ⚠️ **Do not run with `TRADER_LIVE=true` until the go-live checklist is
 > complete.**

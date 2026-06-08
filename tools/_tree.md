@@ -105,7 +105,6 @@
 <details>
 <summary><code>&nbsp;&nbsp;├────── TODO/</code>&nbsp;— [info placeholder]</summary>
 <code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── code-review-findings.md   </code>&nbsp;— [info placeholder]<br>
-<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── go-live-checklist.md      </code>&nbsp;— [info placeholder]<br>
 <code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── holdings-lifecycle-plan.md</code>&nbsp;— [info placeholder]<br>
 <code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── live-readiness-plan.md    </code>&nbsp;— [info placeholder]<br>
 </details>

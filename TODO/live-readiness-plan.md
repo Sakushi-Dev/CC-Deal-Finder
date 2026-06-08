@@ -1,110 +1,165 @@
-# Live-Trading Readiness — Verification Route Plan
+# Live-Trading Readiness — verification route & go-live checklist
 
 > Status: **Beta / dry-run-ready / live-integration in verification.**
-> This plan tracks every step required before the bot may spend real money
-> unattended. It is the single source of truth for live readiness; update the
-> checkboxes and the "Evidence" column as each item is proven.
+> Single source of truth for live readiness. This merges the former
+> `go-live-checklist.md` (the short punch list) and the detailed verification
+> route. Update the checkboxes and the **Evidence** column as each item is proven.
+
+**Current verdict (2026-06-08): NOT yet cleared for unattended live operation.**
+Auth, all read paths, and the reversible escrow offer path are proven on-chain;
+the items in [Required before go-live](#required-before-go-live) remain open.
 
 ## Legend
 
 - [x] verified live against the real API (evidence recorded)
-- [~] partially verified / assumed-correct but not yet proven end-to-end
+- [~] partially verified / assumed-correct but not proven end-to-end
 - [ ] not started / blocked
 
 Each shape is only "verified" when it has been exercised against the **real**
-CollectorCrypt / Privy API and the request **and** response were inspected.
+CollectorCrypt / Privy API with the request **and** response inspected.
 
 ---
 
-## 0. Current verification state (as of 2026-06-07)
+## 0. Current verification state
+
+### What is already proven (no further action)
 
 | Area | State | Evidence |
 |------|-------|----------|
 | Privy SIWS init | [x] | `POST auth.privy.io/api/v1/siws/init` → 200 `{nonce,...}` |
-| Privy SIWS authenticate | [x] | Captured live request; handshake mints a JWT (base64 sig, `walletClientType:"Phantom"`) |
+| Privy SIWS authenticate | [x] | Captured live; handshake mints a JWT (base64 sig, `walletClientType:"Phantom"`) |
 | CC accepts Privy JWT as Bearer | [x] | `checkListingStatus` returned 200 with the SIWS-minted token |
 | `checkListingStatus` (RPC) | [x] | `POST /v2 {method,params}` → 200 `{exists,marketplace,listing}` |
 | `marketplace/buy` request body | [x] | 201 → bare base64 VersionedTransaction (probe 2026-06-06) |
-| `marketplace/buy` → broadcast → on-chain settle | [ ] | Never executed (requires a real purchase) |
-| `marketplace/make-offer` request body | [x] | DevTools capture 2026-06-07; **settled on-chain 2026-06-07** (live escrow offer, sig `5Smokh…d22X`): `{cardId,currency,nftAddress,price,wallet}` |
-| `marketplace/update-offer` request body (bump) | [x] | DevTools capture 2026-06-07: `{buyer,currency,nftAddress,price,wallet}` — real offer edit (answers §9.2) |
-| `marketplace/cancel-offer` request body | [x] | DevTools capture 2026-06-07; **settled on-chain 2026-06-07** (escrow refunded, sig `4gF8zA…mzCC`): `{coin,keepInEscrow,nftAddress,wallet}` |
-| `marketplace/broadcast` response shape | [x] | DevTools capture 2026-06-07; **exercised live 2026-06-07** (offer place + cancel both broadcast, real signatures returned): `{success:true,signature,message}` |
+| `marketplace/make-offer` body | [x] | Settled on-chain 2026-06-07 (sig `5Smokh…d22X`): `{cardId,currency,nftAddress,price,wallet}` |
+| `marketplace/update-offer` body (bump) | [x] | DevTools capture 2026-06-07: `{buyer,currency,nftAddress,price,wallet}` |
+| `marketplace/cancel-offer` body | [x] | Settled on-chain 2026-06-07 (escrow refunded, sig `4gF8zA…mzCC`): `{coin,keepInEscrow,nftAddress,wallet}` |
+| `marketplace/broadcast` response | [x] | Exercised live 2026-06-07 (offer place + cancel): `{success:true,signature,message}` |
+| `sign_transaction` (base64 + v0, sole signer) | [x] | Proven 2026-06-07: signed real make-offer + cancel-offer v0 txs locally; both broadcast |
+| `update-listing` body (markdown) | [x] | DevTools capture 2026-06-07 (E8.3): `{coin,newPrice,seller,tokenMint,wallet}` — bare base64 tx |
+| `card-activity` feed (incoming offers) | [x] | DevTools capture 2026-06-07 (E8.3): `GET card-activity/{nft}?day=60&v2=true` newest-first |
+| `accept-offer` body | [x] | DevTools capture 2026-06-07 (E8.3): `{buyer,currency,nftAddress,price,wallet}` — bare base64 tx |
+| Authoritative "sold" signal | [x] | `GET cards/{wallet}/` lists only owned cards — absence = sold/exited. Wired as `ownership_sync` |
+| Current market value of an owned NFT | [x] | `oraclePrice` per card in `cards/{wallet}/`, wired into `_run_market_recheck` (E8.4) |
+| Full test suite | [x] | 846 tests green |
+| Audit trail (bot log + transaction CSV) | [x] | `logs/bot.log` + `records/transactions.csv`, append-only, real trades only |
+| README live claims | [x] | Live gate + safeguards documented; stale "not implemented" claim removed |
+
+### What is still open
+
+| Area | State | Note |
+|------|-------|------|
+| `marketplace/buy` → broadcast → on-chain settle | [ ] | Never executed (requires a real purchase — irreversible) |
 | `marketplace/list` / relist body | [ ] | Path known, body unverified |
 | `cancel-listing` body | [ ] | Path known, body unverified |
-| `sign_transaction` (base64 + v0, sole signer) | [x] | **Proven 2026-06-07**: signed the real make-offer + cancel-offer v0 transactions locally and both broadcast successfully (escrow debited then refunded) |
 | Status-sync vocabulary (confirmed/cancelled) | [~] | `checkListingStatus` lacks status words → sync stays failure-safe |
-| `update-listing` body (markdown / price change) | [x] | DevTools capture 2026-06-07 (E8.3): `{coin,newPrice,seller,tokenMint,wallet}` — bare base64 tx |
-| `card-activity` feed (incoming offers on a held card) | [x] | DevTools capture 2026-06-07 (E8.3): `GET card-activity/{nft}?day=60&v2=true` newest-first feed; best bid via `best_active_offer` (no offer id) |
-| `accept-offer` body | [x] | DevTools capture 2026-06-07 (E8.3): `{buyer,currency,nftAddress,price,wallet}` (keyed by buyer+price+nft) — bare base64 tx |
-| Authoritative "sold" signal for a held card | [x] | DevTools capture 2026-06-07: `GET cards/{wallet}/` lists only owned cards — absence from the fully-paged owned set = sold/exited (no per-card status). Wired as `ownership_sync`. |
-| Current market value of a single owned NFT | [x] | `oraclePrice` per card in the `cards/{wallet}/` response, wired into `_run_market_recheck` (E8.4) |
+| Risk limits (spend caps, kill-switch) | [ ] | All default to `0` (disabled) |
+| Dedicated RPC endpoint | [ ] | Still public `mainnet-beta` (rate-limited) |
+| Monitoring / alerting | [ ] | Not in place |
 
-**Bottom line:** auth, read paths **and the reversible escrow write are proven
-on-chain** (2026-06-07: a real 6 USDC offer was placed — USDC 20.005 → 14.005 —
-and cancelled — 14.005 → 20.005 refunded — via the live `LiveExecutor` code
-paths). The buy/list/cancel-listing write shapes remain to be settled the same
-way. The post-buy lifecycle adds a few more write shapes (markdown / accept-
-offer / sold-signal) tracked in
-[holdings-lifecycle-plan.md](holdings-lifecycle-plan.md) Etappe 8 — they are
-verified the same way (capture → align → tiny supervised test) and are listed
-here so this plan stays the single live-readiness source of truth.
+> The post-buy lifecycle write shapes (markdown / accept-offer / sold-signal) are
+> verified under Etappe 8 in
+> [holdings-lifecycle-plan.md](holdings-lifecycle-plan.md) and mirrored above so
+> this stays the single live-readiness source of truth.
 
 ---
 
-## 1. Prerequisites (one-time setup)
+## Required before go-live
+
+These are **blockers**. The loop may not run unattended with real funds until
+every item here is done with evidence recorded.
+
+### R1. Prerequisites (one-time setup)
 
 - [ ] **Dedicated test wallet** — a fresh Phantom wallet used only for this bot.
 - [ ] Fund with a **minimal** amount: e.g. **20 USDC + ~0.06 SOL** for fees.
 - [ ] Private key in gitignored `.env` as `TRADER_WALLET_SECRET` (never in UI/store).
-- [ ] **Dedicated RPC endpoint** (Helius/QuickNode/Triton) in `TRADER_RPC_URL` —
-      the public `api.mainnet-beta.solana.com` default is rate-limited and unfit
-      for operation.
-- [ ] Confirm `TRADER_LIVE` is **unset/false** until step 5.
-- [ ] `git` working tree clean; full test suite green (`pytest tests/ -q`).
+- [ ] Confirm `TRADER_LIVE` is **unset/false** until R4.
+- [ ] `git` tree clean; full test suite green (`pytest tests/ -q`).
+
+### R2. Risk configuration — highest priority
+
+All caps currently read `0` = **disabled** (verified via `load_config()`). With
+real money these MUST be set to sane non-zero values first:
+
+- [ ] `TRADER_MAX_SPEND_PER_CYCLE_USD` — e.g. the price of one card.
+- [ ] `TRADER_MAX_SPEND_PER_DAY_USD` — a hard daily ceiling.
+- [ ] `TRADER_MAX_OPEN_POSITIONS` — cap concurrent in-flight orders.
+- [ ] `TRADER_MAX_CONSECUTIVE_FAILURES` — kill-switch (e.g. `3`).
+- [ ] `TRADER_RESERVE_USDC` — USDC the bot may never touch.
+- [ ] `TRADER_GAS_RESERVE_SOL` — SOL kept for fees (currently `0.05`, ok).
+- [ ] Write down the chosen values and the rationale.
+
+**Recommended guard:** make live mode **refuse to start when all risk limits are
+zero**, so the bot can never run uncapped by accident.
+
+### R3. Connection hardening
+
+- [ ] Set `TRADER_RPC_URL` to a **dedicated** endpoint (Helius / QuickNode /
+      Triton). The public `api.mainnet-beta.solana.com` default is rate-limited
+      and unfit for a trading loop.
+- [ ] Confirm the dedicated RPC works for both balance reads and broadcast.
+- [ ] Verify the RPC under load — no rate-limit failures mid-cycle.
+
+### R4. Supervised live buy test (irreversible — do tiny & last)
+
+A buy settles instantly and cannot be undone, so verify it once, supervised, with
+caps set so only the cheapest listing can fill:
+
+- [ ] Pick the cheapest acceptable listing; set caps so only it can fill.
+- [ ] `TRADER_LIVE=true`, run **one** cycle (not the loop).
+- [ ] Verify: buy tx built → signed → broadcast → on-chain settle →
+      order `CONFIRMED` → relist candidate spawned (if resell configured).
+- [ ] Verify status-sync confirms the buy on the next pass.
+- [ ] Reconcile the wallet balance against the order ledger.
+- [ ] Record the signature + balance delta as evidence; mark `marketplace/buy →
+      settle` verified in §0.
+
+### R5. Relist / exit-flow test
+
+- [ ] With the card owned (from R4), run the exit flow once.
+- [ ] Verify `create_listing` → sign → broadcast → listing live → `CONFIRMED`.
+- [ ] Cancel the listing in the UI to restore a clean state.
+- [ ] Record evidence; mark the `marketplace/list` and `cancel-listing` shapes
+      verified in §0.
+
+### R6. Operational hardening
+
+- [ ] Observability: structured logs + an alert on halt / failure streak.
+      (The audit trail — `logs/bot.log` + `records/transactions.csv` — is in
+      place; alerting on top of it is still missing.)
+- [ ] Review `TRADER_AUTO_RESUME` so a restart never silently arms live.
+- [ ] Document the single-instance assumption (never two bots on one wallet).
+- [ ] Write a short operations runbook: start / stop, how to cancel a stuck
+      order, incident response.
+
+### R7. Final gate before unattended live
+
+- [ ] R1–R6 complete with evidence recorded.
+- [ ] Full test suite green locally **and** in CI.
+- [ ] One supervised live session (smallest caps) run end-to-end without manual
+      fixes.
+- [ ] Explicit operator sign-off that limits, RPC, and monitoring are in place.
+
+> Only after this gate may the loop run unattended with real funds — and even
+> then, start with the smallest viable caps.
 
 ---
 
-## 2. Capture the unverified write shapes (DevTools)
+## Optional / nice-to-have (not blockers)
 
-The cheapest, safest way to verify the remaining shapes is to capture **one real
-reversible action** from the browser, then mirror it in code.
-
-- [ ] In the CC UI, with **F12 → Network → Preserve log**, place a small **offer**
-      (escrow bid) on any card, then **cancel** it (USDC refunded).
-- [ ] Copy as cURL (redact `authorization` + `cookie`) for each request:
-  - [ ] `make-offer` **or** `createMakeOfferTx` (the tx-builder)
-  - [ ] `broadcast` (the signed-tx submit) — **captures the broadcast response shape**
-  - [ ] `cancel-offer` (the refund path)
-- [ ] Record: endpoint, card identifier field, price unit/scale, currency,
-      optional expiry, and the exact response envelope.
-- [ ] **Post-buy lifecycle shapes** (for the holdings features — capture when a
-      held card is available, see [holdings-lifecycle-plan.md](holdings-lifecycle-plan.md)
-      Etappe 8): `update-listing` (price change / markdown) ✅, `card-activity`
-      (incoming bids) ✅, `accept-offer` ✅ — all captured & wired in E8.3 — and the
-      owned-cards endpoint that authoritatively reports a held card as **sold** ✅.
-
-**Why an offer first:** offers sit in escrow and are refundable via cancel, so
-this is a fully **reversible** live test — unlike a buy, which settles instantly.
+- [ ] **Live `update-offer` bump test** (`tools/live_offer_check.py --phase bump`)
+      — the body is already captured; place + cancel already prove sign+broadcast,
+      so this only exercises the edit path.
+- [ ] Verify the reconciler/status-sync interprets a full offer lifecycle
+      end-to-end (place → bump → cancel).
+- [ ] Recommended non-zero risk defaults shipped in
+      `trader_settings.example.json`.
+- [ ] "Select all / clear" control in the category dropdown.
 
 ---
 
-## 3. Align code to the captured shapes
-
-- [ ] Update `ccapi.make_offer` body to the verified shape (likely the card's
-      internal `id`/`receiptId`, not `nftAddress`; possibly the RPC
-      `createMakeOfferTx` instead of the REST path).
-- [ ] Update `ccapi.broadcast` **response** parsing (`_extract_signature`,
-      `_is_confirmed`, `_is_filled`) to the real envelope.
-- [x] Update `ccapi.cancel_offer` to the verified body. *(E8.1)*
-- [ ] Confirm `wallet.sign_transaction` (base64 + v0 + sole signer) round-trips
-      the real offer transaction. *(proven by the §4 escrow run)*
-- [x] Update `docs/api.md`: mark offer/broadcast/cancel as VERIFIED. *(E8.1)*
-- [x] Add/adjust tests for the new shapes; keep the suite green. *(E8.1, 806 tests)*
-
----
-
-## 4. Reversible live offer test (escrow)
+## Reference — how the reversible escrow path was proven
 
 Run **outside** the engine via the controlled harness
 [tools/live_offer_check.py](../tools/live_offer_check.py) — it drives the real
@@ -112,109 +167,20 @@ Run **outside** the engine via the controlled harness
 `LiveExecutor` emits), one phase per invocation (no loop). Any fund-moving phase
 refuses to run without `--confirm-funds` and prints USDC/SOL before & after.
 
-- [x] **Phase create** (`--phase create`): build the offer tx; inspect the raw
-      response. No signing, no funds move. *(2026-06-07: SIWS auth + make-offer
-      body accepted; returns a signable base64 tx. NOTE: there is an absolute
-      minimum-offer floor of ~$5 USDC — an offer of ≤ $1 is rejected `400 "Too
-      low"`, so the real test needs a card where a ≥ $5 bid is sensible.)*
-- [x] **Phase place** (`--phase place --confirm-funds`): sign locally, broadcast;
-      confirm **USDC moved to escrow**. *(2026-06-07: placed a real 6 USDC offer
-      on nft `AhUaju…qKkH` (card `2026011154C97268`, ask 18) — broadcast accepted,
-      on-chain signature `5Smokh…d22X`; balance USDC 20.005 → 14.005 (−6 exact),
-      SOL −0.002 gas. The 6 USDC sat in escrow as a resting OPEN offer.)*
-- [x] Inspect the broadcast response and the resulting on-chain state. *(server
-      returned `{success, signature}`; the offer was funded and resting in escrow,
-      confirmed via the balance delta.)*
-- [x] **Phase cancel** (`--phase cancel --confirm-funds`); confirmed the
-      **USDC is refunded**. *(2026-06-07: cancel broadcast accepted, on-chain
-      signature `4gF8zA…mzCC`; balance USDC 14.005 → 20.005 (+6 refunded), SOL
-      returned to ~0.059. Reversible round-trip complete.)*
-- [ ] (Optional) **Phase bump** (`--phase bump --confirm-funds --price <higher>`)
-      to exercise `update-offer` before cancelling. *(not run — place+cancel
-      already prove sign+broadcast end-to-end; update-offer body is captured.)*
-- [ ] Verify the reconciler/status-sync interprets the lifecycle correctly.
+- [x] **Phase create** — build the offer tx; no signing, no funds move.
+      *(2026-06-07: SIWS auth + make-offer body accepted; returns a signable
+      base64 tx. NOTE: absolute minimum-offer floor ~$5 USDC — a bid ≤ $1 is
+      rejected `400 "Too low"`.)*
+- [x] **Phase place** (`--confirm-funds`) — sign locally, broadcast; USDC moved
+      to escrow. *(2026-06-07: real 6 USDC offer on nft `AhUaju…qKkH`, ask 18;
+      sig `5Smokh…d22X`; USDC 20.005 → 14.005 (−6), SOL −0.002 gas.)*
+- [x] **Phase cancel** (`--confirm-funds`) — USDC refunded. *(2026-06-07: sig
+      `4gF8zA…mzCC`; USDC 14.005 → 20.005 (+6 refunded). Reversible round-trip
+      complete.)*
 
-Exit criteria: an offer was placed, observed in escrow, and refunded — with the
-code (not a script) producing the same request bytes.
-
----
-
-## 5. Reversible-where-possible live buy test (smallest amount)
-
-A buy settles immediately (not reversible), so do this **last** and **tiny**:
-
-- [ ] Pick the cheapest acceptable listing; set a hard cap so only it can fill.
-- [ ] Set risk limits (see §7) to a single, minimal purchase.
-- [ ] `TRADER_LIVE=true`, run **one** cycle (not the loop).
-- [ ] Verify: buy tx built → signed → broadcast → **on-chain settle** →
-      order `CONFIRMED` → relist candidate spawned (if resell configured).
-- [ ] Verify status-sync confirms the buy on the next pass.
-- [ ] Reconcile the wallet balance against the order ledger.
-
-Exit criteria: a real card was bought for a known tiny amount and the full
-state machine matched on-chain reality.
-
----
-
-## 6. Relist / exit-flow test
-
-- [ ] With the card owned (from §5), run the exit flow once.
-- [ ] Verify `create_listing` → sign → broadcast → listing live → `CONFIRMED`.
-- [ ] Cancel the listing in the UI to restore a clean state.
-
----
-
-## 7. Mandatory risk configuration for live
-
-All risk limits currently default to `0` (disabled). For real money they MUST be
-set before going live:
-
-- [ ] `TRADER_MAX_SPEND_PER_CYCLE_USD` — small (e.g. one card).
-- [ ] `TRADER_MAX_SPEND_PER_DAY_USD` — a hard daily ceiling.
-- [ ] `TRADER_MAX_OPEN_POSITIONS` — cap concurrent exposure.
-- [ ] `TRADER_MAX_CONSECUTIVE_FAILURES` — kill-switch (e.g. 3).
-- [ ] `TRADER_RESERVE_USDC` / `TRADER_GAS_RESERVE_SOL` — keep funds untouchable.
-- [ ] Document the chosen values and the rationale.
-
-Consider shipping **recommended non-zero defaults** (or a "live refuses to start
-with all-zero limits" guard) so an operator cannot accidentally run uncapped.
-
----
-
-## 8. Operational hardening
-
-- [ ] **Operations checklist** for live mode (start/stop, monitoring, incident
-      response, how to cancel a stuck order).
-- [ ] Dedicated RPC verified under load (no rate-limit failures mid-cycle).
-- [ ] Auto-resume behaviour reviewed (`TRADER_AUTO_RESUME` never silently arms live).
-- [ ] Observability: structured logs / alert on halt or failure streak
-      (deferred ETAPPE 9 — pull forward before unattended operation).
-- [ ] Single-instance assumption documented (no two bots on one wallet).
-
----
-
-## 9. Documentation reconciliation
-
-- [ ] **README**: remove the stale "LiveExecutor not implemented" claim; describe
-      the real live gate (live + signer + auth provider) and its safeguards.
-- [ ] Update the test count and capabilities in README.
-- [ ] `docs/api.md`: ensure every endpoint reflects VERIFIED vs assumed honestly.
-- [ ] Cross-link this plan from README so operators see live status at a glance.
-- [ ] Keep this plan and [holdings-lifecycle-plan.md](holdings-lifecycle-plan.md)
-      in sync: the post-buy lifecycle write shapes (markdown / accept-offer /
-      sold-signal) are verified under Etappe 8 there and mirrored in §0 here.
-
----
-
-## 10. Final gate before unattended live
-
-- [ ] Steps 1–9 complete with evidence recorded.
-- [ ] Full test suite green locally **and** in CI.
-- [ ] One supervised live session (small caps) run end-to-end without manual fixes.
-- [ ] Explicit operator sign-off that limits, RPC, and monitoring are in place.
-
-Only after this gate may the loop run unattended with real funds — and even then
-starting with the smallest viable caps.
+This proved `sign_transaction` (base64 + v0 + sole signer) and the broadcast
+response shape end-to-end. The buy / list / cancel-listing write shapes (R4, R5)
+are verified the same way: capture → align code → tiny supervised test.
 
 ---
 
@@ -228,5 +194,14 @@ starting with the smallest viable caps.
   endpoint carries no confirmed/cancelled vocabulary); this is failure-safe
   (stays `unresolved`) but means confirmation relies on the broadcast response
   until a richer status source is verified.
-- Never commit `.env`, `*.db`, history files, or any DevTools capture
-  (`auth.log`-style files) — they contain secrets/signatures.
+
+## Security reminders (ongoing)
+
+- The wallet **private key** lives only in the git-ignored `.env`
+  (`TRADER_WALLET_SECRET`) — never in the UI, the store, or a commit.
+- DevTools captures under `tools/captures/` (and any `*.ini` / `auth.log`-style
+  files) contain real wallet / signature / card data and are git-ignored — never
+  commit them.
+- The audit trail (`logs/`, `records/`) contains real trade data and is
+  git-ignored — never commit it.
+- Use a **dedicated, separately funded** test wallet; treat the key like cash.
