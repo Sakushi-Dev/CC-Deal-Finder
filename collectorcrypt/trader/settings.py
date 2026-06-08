@@ -164,11 +164,25 @@ _EDITABLE_ENV = {f["env"] for f in EDITABLE_FIELDS}
 # --------------------------------------------------------------------------- #
 # Strategy presets
 # --------------------------------------------------------------------------- #
-# Built-in, read-only profiles. Each only sets the *strategy* knobs (allocation,
-# discounts, offer psychology, markdown curve); budget, risk caps and connection
-# settings are left untouched so a preset never overwrites a user's wallet
-# reserves or kill-switch. Applying a preset merges these over the current
-# values, so anything not listed here is kept.
+# Built-in, read-only profiles. Each sets the *complete* set of strategy knobs
+# (sizing, allocation, discounts, offer psychology, escalation, holdings /
+# markdown curve) so switching profiles is deterministic — no leftover value
+# from a previously applied profile can bleed through. Budget reserves, risk
+# caps (kill switch), sourcing (categories) and the loop interval are
+# deliberately left untouched so a preset never overwrites a user's wallet
+# reserves, kill switch or category choice. Applying a preset merges these over
+# the current values, so anything outside the strategy groups is kept.
+#
+# The groups every preset must fully cover (validated in the test suite):
+PRESET_GROUPS: frozenset[str] = frozenset(
+    {"Sizing", "Allocation", "Resale", "Escalation", "Offers", "Holdings"}
+)
+# The complete set of env keys a preset is expected to define, derived from the
+# field specs so it can never drift out of sync with EDITABLE_FIELDS.
+PRESET_KEYS: tuple[str, ...] = tuple(
+    f["env"] for f in EDITABLE_FIELDS if f.get("group") in PRESET_GROUPS
+)
+
 BUILTIN_PRESETS: list[dict[str, Any]] = [
     {
         "id": "direct_flip",
@@ -181,15 +195,34 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "instead of locked in unsold cards."
         ),
         "values": {
+            # Sizing
+            "TRADER_BASE_MAX_CARD_USD": "100",
+            "TRADER_MIN_CARD_USD": "0",
+            "TRADER_MIN_DISCOUNT_PCT": "30",
+            # Allocation (offers inactive, but defined for determinism)
             "TRADER_DIRECT_BUY_PCT": "100",
             "TRADER_OFFER_PCT": "0",
-            "TRADER_MIN_DISCOUNT_PCT": "30",
+            "TRADER_OFFER_DISCOUNT_PCT": "15",
+            "TRADER_OFFER_MAX_PREMIUM_PCT": "10",
+            # Resale
             "TRADER_RESELL_DISCOUNT_PCT": "8",
+            # Escalation
+            "TRADER_ESCALATION_VOLUME_USD": "1000",
+            "TRADER_ESCALATION_MAX_CARD_USD": "1000",
+            # Offers (inactive without an offer allocation)
+            "TRADER_OFFER_BUMP_USD": "0.1",
+            "TRADER_OFFER_BUMP_AGE_HOURS": "24",
+            "TRADER_OFFER_BUMP_MAX": "3",
+            # Holdings / markdown curve — fast turnover
+            "TRADER_MIN_OPERATE_USD": "0",
+            "TRADER_MAX_OWNED_CARDS": "0",
+            "TRADER_UNPOPULAR_DAYS": "7",
             "TRADER_MARKDOWN_DELAY_DAYS": "3",
             "TRADER_MARKDOWN_STEP_PCT": "5",
             "TRADER_MARKDOWN_INTERVAL_DAYS": "2",
             "TRADER_OFFER_ACCEPT_DELAY_DAYS": "7",
             "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "90",
+            "TRADER_MARKET_RECHECK_HOURS": "24",
         },
     },
     {
@@ -203,20 +236,34 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "notifications (mere-exposure nudging) before being cancelled."
         ),
         "values": {
+            # Sizing
+            "TRADER_BASE_MAX_CARD_USD": "100",
+            "TRADER_MIN_CARD_USD": "0",
+            "TRADER_MIN_DISCOUNT_PCT": "25",
+            # Allocation
             "TRADER_DIRECT_BUY_PCT": "50",
             "TRADER_OFFER_PCT": "50",
-            "TRADER_MIN_DISCOUNT_PCT": "25",
             "TRADER_OFFER_DISCOUNT_PCT": "15",
             "TRADER_OFFER_MAX_PREMIUM_PCT": "10",
+            # Resale
             "TRADER_RESELL_DISCOUNT_PCT": "10",
-            "TRADER_MARKDOWN_DELAY_DAYS": "5",
-            "TRADER_MARKDOWN_STEP_PCT": "5",
-            "TRADER_MARKDOWN_INTERVAL_DAYS": "3",
+            # Escalation
+            "TRADER_ESCALATION_VOLUME_USD": "1000",
+            "TRADER_ESCALATION_MAX_CARD_USD": "1000",
+            # Offers
             "TRADER_OFFER_BUMP_USD": "0.1",
             "TRADER_OFFER_BUMP_AGE_HOURS": "24",
             "TRADER_OFFER_BUMP_MAX": "3",
+            # Holdings / markdown curve — moderate patience
+            "TRADER_MIN_OPERATE_USD": "0",
+            "TRADER_MAX_OWNED_CARDS": "0",
+            "TRADER_UNPOPULAR_DAYS": "7",
+            "TRADER_MARKDOWN_DELAY_DAYS": "5",
+            "TRADER_MARKDOWN_STEP_PCT": "5",
+            "TRADER_MARKDOWN_INTERVAL_DAYS": "3",
             "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
             "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "85",
+            "TRADER_MARKET_RECHECK_HOURS": "24",
         },
     },
     {
@@ -230,19 +277,34 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "priced well above market, who almost never accept a lowball."
         ),
         "values": {
+            # Sizing (min discount inactive for offers, but defined)
+            "TRADER_BASE_MAX_CARD_USD": "100",
+            "TRADER_MIN_CARD_USD": "0",
+            "TRADER_MIN_DISCOUNT_PCT": "25",
+            # Allocation
             "TRADER_DIRECT_BUY_PCT": "0",
             "TRADER_OFFER_PCT": "100",
             "TRADER_OFFER_DISCOUNT_PCT": "25",
             "TRADER_OFFER_MAX_PREMIUM_PCT": "5",
+            # Resale
             "TRADER_RESELL_DISCOUNT_PCT": "10",
+            # Escalation
+            "TRADER_ESCALATION_VOLUME_USD": "1000",
+            "TRADER_ESCALATION_MAX_CARD_USD": "1000",
+            # Offers — persistent, faster, more bumps
             "TRADER_OFFER_BUMP_USD": "0.1",
             "TRADER_OFFER_BUMP_AGE_HOURS": "18",
             "TRADER_OFFER_BUMP_MAX": "5",
+            # Holdings / markdown curve — most patient
+            "TRADER_MIN_OPERATE_USD": "0",
+            "TRADER_MAX_OWNED_CARDS": "0",
+            "TRADER_UNPOPULAR_DAYS": "7",
             "TRADER_MARKDOWN_DELAY_DAYS": "7",
             "TRADER_MARKDOWN_STEP_PCT": "4",
             "TRADER_MARKDOWN_INTERVAL_DAYS": "4",
             "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
             "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "85",
+            "TRADER_MARKET_RECHECK_HOURS": "24",
         },
     },
 ]

@@ -390,6 +390,26 @@ def test_presets_only_reference_editable_keys():
             assert env in settingsmod._EDITABLE_ENV
 
 
+def test_presets_define_the_full_strategy_knob_set():
+    # Every preset must set the complete set of strategy knobs so switching
+    # profiles is deterministic (no leftover value bleeds through).
+    expected = set(settingsmod.PRESET_KEYS)
+    assert expected  # guard against an empty derivation
+    for preset in settingsmod.BUILTIN_PRESETS:
+        assert set(preset["values"]) == expected, preset["id"]
+
+
+def test_presets_never_touch_budget_risk_sourcing_or_loop():
+    # Budget reserves, risk caps (kill switch), sourcing (categories) and the
+    # loop interval are the user's domain — a preset must never overwrite them.
+    protected = {
+        f["env"] for f in settingsmod.EDITABLE_FIELDS
+        if f.get("group") in {"Budget", "Risk limits", "Sourcing", "Loop"}
+    }
+    for preset in settingsmod.BUILTIN_PRESETS:
+        assert protected.isdisjoint(preset["values"]), preset["id"]
+
+
 def test_preset_allocations_are_consistent():
     by_id = {p["id"]: p["values"] for p in settingsmod.BUILTIN_PRESETS}
     assert by_id["direct_flip"]["TRADER_DIRECT_BUY_PCT"] == "100"
