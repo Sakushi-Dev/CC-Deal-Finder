@@ -118,97 +118,118 @@ Alternatively, on Windows double-click [`start.bat`](start.bat) — starts the a
 
 ## Project structure
 
-```text
-collectorcrypt deal finder/
-├── collectorcrypt/
-│   ├── trader/
-│   │   ├── auth.py              # session model, NullSessionProvider, StaticTokenProvider
-│   │   ├── ccapi.py             # authenticated CC trading client (buy, offer, list, broadcast)
-│   │   ├── config.py            # all env vars: secrets from .env, tunables from JSON
-│   │   ├── engine.py            # one decision cycle (source → plan → execute)
-│   │   ├── executor.py          # DryRunExecutor + gated LiveExecutor + maintenance
-│   │   ├── holdings.py          # holdings lifecycle: markdown, bump, cancel, accept
-│   │   ├── manager.py           # background worker, loop control, crash recovery
-│   │   ├── orders.py            # Order domain model, lifecycle, audit trail
-│   │   ├── reconcile.py         # Reconciler + StatusSyncer (read-only + authoritative)
-│   │   ├── risk.py              # spend caps, open-positions cap, kill-switch
-│   │   ├── settings.py          # UI-editable tunables + strategy profiles
-│   │   ├── siws.py              # Privy SIWS provider (real handshake, token cache)
-│   │   ├── store.py             # SQLite persistence (cycles, orders, holdings)
-│   │   ├── strategy.py          # buy strategy: quantity-first, escalation (pure)
-│   │   └── wallet.py            # Solana RPC balances + local keypair signing
-│   ├── api.py                   # CCClient – HTTP + in-memory cache + retry
-│   ├── config.py                # URLs, timeouts, retry policy, limits
-│   ├── normalize.py             # card parsing, formatting, FX conversion
-│   ├── scanner.py               # ScanManager – background worker (deals)
-│   └── web.py                   # Flask factory + blueprints (views, api)
-├── docs/
-│   ├── index.md                 # documentation table of contents
-│   ├── api-overview.md          # basics, public /marketplace endpoint, update guide
-│   ├── api-endpoints.md         # full endpoint registry from the frontend bundle
-│   ├── api-auth.md              # Privy SIWS handshake (verified), session providers
-│   ├── api-trading.md           # verified trading flows, error & retry policy
-│   ├── api-executor.md          # live executor, exit/relisting, holdings passes
-│   └── api-risk.md              # risk engine, crash recovery, settings reference
-├── static/
-│   ├── css/app.css              # full design (dark + light theme)
-│   └── js/
-│       ├── theme.js             # dark/light switcher + active nav link
-│       ├── sol-rate.js          # SOL→USD rate (10-min sessionStorage cache)
-│       ├── util.js              # formatters (USD/price, escapeHtml)
-│       ├── lightbox.js          # card preview (flip + parallax)
-│       ├── obs-badge.js         # observe count badge (cross-tab sync)
-│       ├── observe-store.js     # persistent observe data (localStorage)
-│       ├── observe-cards.js     # observe buttons + rebuild + API refresh
-│       ├── insured.js           # insured-value footer
-│       ├── view-toggle.js       # card/list view (persistent)
-│       ├── filters.js           # marketplace filter bar
-│       ├── marketplace.js       # bindings for /
-│       ├── deals.js             # bindings for /deals (poll loop)
-│       ├── profile.js           # wallet persistence + card wiring
-│       └── trader.js            # full trader dashboard (polling, all panels)
-├── templates/
-│   ├── base.html                # layout, loads CSS + core JS
-│   ├── _card.html               # reusable marketplace card component
-│   ├── index.html               # marketplace + observe
-│   ├── deals.html               # deals scanner
-│   ├── profile.html             # wallet dashboard + owned cards
-│   └── trader.html              # trader dashboard (tabs: overview, planned, holdings, history)
-├── tests/
-│   ├── conftest.py              # shared fixtures (fake wallet, fake CC client, crypto helpers)
-│   ├── test_auth_siws.py
-│   ├── test_ccapi.py
-│   ├── test_config_settings.py
-│   ├── test_engine_live.py
-│   ├── test_executor_live.py
-│   ├── test_holdings.py
-│   ├── test_manager_recovery.py
-│   ├── test_orders.py
-│   ├── test_reconcile.py
-│   ├── test_risk.py
-│   ├── test_store.py
-│   ├── test_wallet.py
-│   └── test_web_trader.py
-├── TODO/
-│   ├── go-live-checklist.md     # actionable punch list before live trading
-│   ├── live-readiness-plan.md   # full verification route + per-shape evidence
-│   ├── holdings-lifecycle-plan.md
-│   └── code-review-findings.md
-├── tools/
-│   ├── captures/
-│   │   ├── requests/            # DevTools curl captures (.bash) — gitignored
-│   │   └── responses/           # DevTools response captures (.bash) — gitignored
-│   ├── discover_endpoints.py    # extract API paths from the frontend bundle
-│   ├── probe_live.py            # read-only live API probe (no orders placed)
-│   └── live_offer_check.py      # reversible escrow-offer verification
-├── app.py                       # Flask entry point
-├── trade.py                     # trader CLI: --json, --loop SECONDS
-├── _tree.py                     # prints current project file tree
-├── .env.example                 # all env vars with descriptions (copy to .env)
-├── trader_settings.example.json # strategy tuning defaults (copy to trader_settings.json)
-├── requirements.txt             # flask, requests, solders, python-dotenv
-└── start.bat                    # Windows launcher (minimized + opens browser)
-```
+<details>
+<summary><strong>CC-Deal-Finder/</strong></summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;├── app.py                      </code>&nbsp;— Flask entry point<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;├── trade.py                    </code>&nbsp;— trader CLI: --json, --loop SECONDS<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;├── .env.example                </code>&nbsp;— all env vars with descriptions (copy to .env)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;├── trader_settings.example.json</code>&nbsp;— strategy tuning defaults (copy to trader_settings.json)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;├── requirements.txt            </code>&nbsp;— flask, requests, solders, python-dotenv<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;├── start.bat                   </code>&nbsp;— Windows launcher (minimized + opens browser)<br>
+<details>
+<summary><code>&nbsp;&nbsp;├────── collectorcrypt/</code>&nbsp;— deal-finder core + trader</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── __init__.py   </code>&nbsp;— exports create_app<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── api.py        </code>&nbsp;— CCClient – HTTP + in-memory cache + retry<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── config.py     </code>&nbsp;— URLs, timeouts, retry policy, limits<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── normalize.py  </code>&nbsp;— card parsing, formatting, FX conversion<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── scanner.py    </code>&nbsp;— ScanManager – background worker (deals)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── web.py        </code>&nbsp;— Flask factory + blueprints (views, api)<br>
+<details>
+<summary><code>&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── trader/</code>&nbsp;— autonomous trading bot</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── auth.py       </code>&nbsp;— session model, NullSessionProvider, StaticTokenProvider<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── ccapi.py      </code>&nbsp;— authenticated CC trading client (buy, offer, list, broadcast)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── config.py     </code>&nbsp;— all env vars: secrets from .env, tunables from JSON<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── engine.py     </code>&nbsp;— one decision cycle (source → plan → execute)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── executor.py   </code>&nbsp;— DryRunExecutor + gated LiveExecutor + maintenance<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── holdings.py   </code>&nbsp;— holdings lifecycle: markdown, bump, cancel, accept<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── manager.py    </code>&nbsp;— background worker, loop control, crash recovery<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── orders.py     </code>&nbsp;— Order domain model, lifecycle, audit trail<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── reconcile.py  </code>&nbsp;— Reconciler + StatusSyncer (read-only + authoritative)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── risk.py       </code>&nbsp;— spend caps, open-positions cap, kill-switch<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── settings.py   </code>&nbsp;— UI-editable tunables + strategy profiles<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── siws.py       </code>&nbsp;— Privy SIWS provider (real handshake, token cache)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── store.py      </code>&nbsp;— SQLite persistence (cycles, orders, holdings)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── strategy.py   </code>&nbsp;— buy strategy: quantity-first, escalation (pure)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── wallet.py     </code>&nbsp;— Solana RPC balances + local keypair signing<br>
+</details>
+</details>
+<details>
+<summary><code>&nbsp;&nbsp;├────── docs/</code>&nbsp;— API documentation</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── index.md         </code>&nbsp;— table of contents<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── api-overview.md  </code>&nbsp;— basics, public /marketplace endpoint, update guide<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── api-endpoints.md </code>&nbsp;— full endpoint registry from the frontend bundle<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── api-auth.md      </code>&nbsp;— Privy SIWS handshake (verified), session providers<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── api-trading.md   </code>&nbsp;— verified trading flows, error & retry policy<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── api-executor.md  </code>&nbsp;— live executor, exit/relisting, holdings passes<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── api-risk.md      </code>&nbsp;— risk engine, crash recovery, settings reference<br>
+</details>
+<details>
+<summary><code>&nbsp;&nbsp;├────── static/</code>&nbsp;— CSS + JavaScript</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── css/app.css       </code>&nbsp;— full design (dark + light theme)<br>
+<details>
+<summary><code>&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── js/</code></summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── theme.js          </code>&nbsp;— dark/light switcher + active nav link<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── sol-rate.js       </code>&nbsp;— SOL→USD rate (10-min sessionStorage cache)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── util.js           </code>&nbsp;— formatters (USD/price, escapeHtml)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── lightbox.js       </code>&nbsp;— card preview (flip + parallax)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── obs-badge.js      </code>&nbsp;— observe count badge (cross-tab sync)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── observe-store.js  </code>&nbsp;— persistent observe data (localStorage)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── observe-cards.js  </code>&nbsp;— observe buttons + rebuild + API refresh<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── insured.js        </code>&nbsp;— insured-value footer<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── view-toggle.js    </code>&nbsp;— card/list view (persistent)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── filters.js        </code>&nbsp;— marketplace filter bar<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── marketplace.js    </code>&nbsp;— bindings for /<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── deals.js          </code>&nbsp;— bindings for /deals (poll loop)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── profile.js        </code>&nbsp;— wallet persistence + card wiring<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── trader.js         </code>&nbsp;— full trader dashboard (polling, all panels)<br>
+</details>
+</details>
+<details>
+<summary><code>&nbsp;&nbsp;├────── templates/</code>&nbsp;— Jinja2 HTML templates</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── base.html     </code>&nbsp;— layout, loads CSS + core JS<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── _card.html    </code>&nbsp;— reusable marketplace card component<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── index.html    </code>&nbsp;— marketplace + observe<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── deals.html    </code>&nbsp;— deals scanner<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── profile.html  </code>&nbsp;— wallet dashboard + owned cards<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── trader.html   </code>&nbsp;— trader dashboard (tabs: overview, planned, holdings, history)<br>
+</details>
+<details>
+<summary><code>&nbsp;&nbsp;├────── tests/</code>&nbsp;— pytest test suite</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── conftest.py             </code>&nbsp;— shared fixtures (fake wallet, fake CC client, crypto helpers)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_auth_siws.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_ccapi.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_config_settings.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_engine_live.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_executor_live.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_holdings.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_manager_recovery.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_orders.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_reconcile.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_risk.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_store.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_wallet.py</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── test_web_trader.py</code><br>
+</details>
+<details>
+<summary><code>&nbsp;&nbsp;├────── TODO/</code>&nbsp;— planning & checklists</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── go-live-checklist.md      </code>&nbsp;— actionable punch list before live trading<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── live-readiness-plan.md    </code>&nbsp;— full verification route + per-shape evidence<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── holdings-lifecycle-plan.md</code><br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── code-review-findings.md</code><br>
+</details>
+<details>
+<summary><code>&nbsp;&nbsp;└────── tools/</code>&nbsp;— development utilities</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── _tree.py              </code>&nbsp;— prints current project file tree<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── discover_endpoints.py </code>&nbsp;— extract API paths from the frontend bundle<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── probe_live.py         </code>&nbsp;— read-only live API probe (no orders placed)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── live_offer_check.py   </code>&nbsp;— reversible escrow-offer verification<br>
+<details>
+<summary><code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── captures/</code>&nbsp;— DevTools curl captures (gitignored)</summary>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── requests/   </code>&nbsp;— curl request captures (.bash)<br>
+<code>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── responses/  </code>&nbsp;— response body captures (.bash)<br>
+</details>
+</details>
+</details>
 
 ## Autonomous trader
 
@@ -349,7 +370,7 @@ risk engine).
 
 ```powershell
 # print current file tree
-python _tree.py
+python tools/_tree.py
 
 # discover new/changed API endpoints from the frontend bundle
 python tools/discover_endpoints.py
@@ -364,3 +385,7 @@ pytest
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+
+
+
