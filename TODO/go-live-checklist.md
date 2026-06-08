@@ -106,6 +106,6 @@ A buy settles instantly and cannot be undone, so verify it once, supervised:
 
 - The wallet **private key** lives only in the git-ignored `.env`
   (`TRADER_WALLET_SECRET`) — never in the UI, the store, or a commit.
-- DevTools `.ini` captures under `docs/` contain real wallet/signature/card data
+- DevTools `.bash` captures under `tools/captures/` contain real wallet/signature/card data
   and are git-ignored — never commit them.
 - Use a **dedicated, separately funded** test wallet; treat the key like cash.
