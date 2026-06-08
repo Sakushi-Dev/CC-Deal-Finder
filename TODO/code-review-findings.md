@@ -70,7 +70,7 @@ vorhanden sind, oder zumindest ein Warning loggen wenn ein Fallback greift.
 
 ## 🔴 Mittel — Logikfehler
 
-### 4. `engine.py` — `_collect_listings` macht O(categories × pages) API-Calls für identische Daten
+### 4. `engine.py` — `_collect_listings` macht O(categories × pages) API-Calls für identische Daten ✅ FIXED (2026-06-08)
 
 **Datei:** `collectorcrypt/trader/engine.py`, `_collect_listings()`, Zeile ~150
 
@@ -88,6 +88,10 @@ abgerufen. Mit Cache TTL kann das in einer Session noch glimpflich ausgehen — 
 
 **Fix:** Pages **einmal** fetchen, dann alle Kategorien in einem einzigen Durchlauf
 client-seitig partitionieren.
+
+**Erledigt:** Äußere Kategorie-Schleife entfernt; jede Seite wird jetzt genau einmal
+gefetcht und gegen das Set der konfigurierten Kategorien (`wanted`) gefiltert. Aus
+O(categories × pages) wird O(pages). 819 Tests grün.
 
 ---
 

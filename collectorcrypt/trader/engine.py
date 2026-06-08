@@ -142,33 +142,37 @@ class TradeEngine:
             return set()
 
     def _collect_listings(self) -> list[dict[str, Any]]:
-        """Fetch + normalize listings across the configured categories/pages."""
+        """Fetch + normalize listings across the configured categories/pages.
+
+        The marketplace API ignores the category param (every category returns
+        the same pages), so each page is fetched **once** and partitioned
+        client-side against the configured categories (mirrors ScanManager).
+        An empty category set means all categories qualify.
+        """
         from .. import config as app_config
+
+        wanted = {c.strip().lower() for c in self._cfg.categories if c.strip()}
 
         seen: set[str] = set()
         cards: list[dict[str, Any]] = []
-        for category in self._cfg.categories:
-            want = category.strip().lower()
-            for page in range(1, self._cfg.max_pages + 1):
-                data = self._client.fetch_marketplace_page_with_retry(
-                    page, app_config.SCAN_STEP
-                )
-                raw = data.get("filterNFtCard") or []
-                if not raw:
-                    break
-                for c in raw:
-                    n = normalize_card(c)
-                    nft = n.get("nft")
-                    if not nft or nft in seen:
-                        continue
-                    # The marketplace API ignores the category param, so filter
-                    # client-side (mirrors ScanManager). Empty = all categories.
-                    if want and (n.get("category") or "").lower() != want:
-                        continue
-                    seen.add(nft)
-                    cards.append(n)
-                if page >= int(data.get("totalPages") or 1):
-                    break
+        for page in range(1, self._cfg.max_pages + 1):
+            data = self._client.fetch_marketplace_page_with_retry(
+                page, app_config.SCAN_STEP
+            )
+            raw = data.get("filterNFtCard") or []
+            if not raw:
+                break
+            for c in raw:
+                n = normalize_card(c)
+                nft = n.get("nft")
+                if not nft or nft in seen:
+                    continue
+                if wanted and (n.get("category") or "").lower() not in wanted:
+                    continue
+                seen.add(nft)
+                cards.append(n)
+            if page >= int(data.get("totalPages") or 1):
+                break
         return cards
 
     # ------------------------------------------------------------------ #
