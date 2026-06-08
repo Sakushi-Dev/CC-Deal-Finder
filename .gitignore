@@ -63,4 +63,5 @@ output/
 # Live API probe output + DevTools captures (contain real wallet / signature /
 # card data; regenerate locally, NEVER commit)
 docs/api_probe_results.md
-docs/*.ini
+tools/captures/requests/*.bash
+tools/captures/responses/*.bash

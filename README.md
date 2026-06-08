@@ -270,7 +270,7 @@ RPC, and one supervised tiny buy. These are tracked in:
 
 ## Development
 
-Further API details are in [`docs/api.md`](docs/api.md).
+Further API details are in [`docs/`](docs/index.md) — see the index for the full documentation split.
 
 To discover previously unknown endpoints:
 
