@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable
 
 import requests
@@ -20,11 +21,13 @@ class CCClient:
     """Thin wrapper around ``requests`` with in-memory cache and retry."""
 
     def __init__(self, *, session: requests.Session | None = None,
-                 cache_ttl: float = config.CACHE_TTL_SECONDS) -> None:
+                 cache_ttl: float = config.CACHE_TTL_SECONDS,
+                 cache_max_entries: int = config.CACHE_MAX_ENTRIES) -> None:
         self._session = session or requests.Session()
         self._session.headers.update(_DEFAULT_HEADERS)
         self._cache_ttl = cache_ttl
-        self._cache: dict[tuple, tuple[float, Any]] = {}
+        self._cache_max_entries = max(1, int(cache_max_entries))
+        self._cache: "OrderedDict[tuple, tuple[float, Any]]" = OrderedDict()
         self._cache_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
@@ -125,12 +128,24 @@ class CCClient:
         with self._cache_lock:
             hit = self._cache.get(key)
             if hit and (now - hit[0]) < self._cache_ttl:
+                self._cache.move_to_end(key)  # mark as recently used
                 return hit[1]
         return None
 
     def _cache_set(self, key: tuple, value: Any) -> None:
+        now = time.time()
         with self._cache_lock:
-            self._cache[key] = (time.time(), value)
+            # Drop entries whose TTL has already elapsed so stale data does not
+            # linger (TTL is otherwise only checked on read).
+            expired = [k for k, (ts, _) in self._cache.items()
+                       if (now - ts) >= self._cache_ttl]
+            for k in expired:
+                del self._cache[k]
+            self._cache[key] = (now, value)
+            self._cache.move_to_end(key)
+            # Bound total size: evict the least-recently-used entries.
+            while len(self._cache) > self._cache_max_entries:
+                self._cache.popitem(last=False)
 
 
 def _sleep_with_abort(seconds: float, should_abort: Callable[[], bool]) -> bool:

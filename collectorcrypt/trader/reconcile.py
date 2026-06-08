@@ -38,6 +38,10 @@ from .store import OrderStore
 logger = logging.getLogger("collectorcrypt.trader.reconcile")
 
 # How long an order may sit in an active state before it is flagged as stale.
+# NOTE: read once at import (env-only, NOT part of TraderConfig). Unlike the
+# hot-reloaded trader settings, changing TRADER_RECONCILE_STALE_SEC requires a
+# process restart. The Reconciler is also constructed once, so the value would
+# be frozen at construction even if it lived in the config.
 STALE_AFTER_SEC = float(os.environ.get("TRADER_RECONCILE_STALE_SEC", "900"))
 
 

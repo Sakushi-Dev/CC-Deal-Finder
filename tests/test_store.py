@@ -224,6 +224,19 @@ def test_recent_cycles_oldest_first(store):
     assert [c["cycle_id"] for c in cycles] == ["c1", "c2"]
 
 
+def test_cycle_count_not_capped_by_recent_window(store):
+    for i in range(5):
+        store.save_cycle(f"c{i}", mode="m", wallet="W", demo=False,
+                         config_snapshot={}, summary={})
+    # recent_cycles honours its limit, cycle_count returns the true total.
+    assert len(store.recent_cycles(limit=2)) == 2
+    assert store.cycle_count() == 5
+
+
+def test_cycle_count_empty(store):
+    assert store.cycle_count() == 0
+
+
 # --------------------------------------------------------------------------- #
 # Runtime KV
 # --------------------------------------------------------------------------- #

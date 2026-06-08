@@ -395,6 +395,18 @@ class OrderStore:
             })
         return out
 
+    def cycle_count(self) -> int:
+        """Total number of persisted cycles (NOT capped by recent_cycles).
+
+        ``recent_cycles`` only returns a recent window, so the in-memory history
+        deque undercounts the true total after a restart. This authoritative
+        count keeps the dashboard's cycle counter correct across restarts.
+        """
+        with self._connect() as conn:
+            cur = conn.execute("SELECT COUNT(*) AS n FROM cycles")
+            row = cur.fetchone()
+        return int(row["n"] or 0)
+
     def counts_by_status(self) -> dict[str, int]:
         with self._connect() as conn:
             cur = conn.execute(

@@ -343,7 +343,13 @@ class TraderManager:
             return
         for entry in cycles:
             self._history.append(_history_record(entry))
-        self._cycles = len(self._history)
+        # The history deque is capped at _HISTORY_KEEP, so its length undercounts
+        # the true cycle total after a restart. Read the authoritative count from
+        # the store (falling back to the deque length if the query fails).
+        try:
+            self._cycles = self._store.cycle_count()
+        except Exception:  # noqa: BLE001 - count is cosmetic, never crash boot
+            self._cycles = len(self._history)
 
 
 def _history_record(report: dict[str, Any]) -> dict[str, Any]:

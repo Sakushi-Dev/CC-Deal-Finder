@@ -45,11 +45,17 @@ aktiv entfernt.
 **Fix:** Max-Größe einführen (z. B. `maxsize=500`) und/oder einen
 periodischen Cleanup-Sweep beim `_cache_set`.
 
+**Erledigt (2026-06-08):** `_cache` ist jetzt ein `OrderedDict` mit LRU-Eviction
+(`CACHE_MAX_ENTRIES=500`). `_cache_set` entfernt zuerst alle abgelaufenen Einträge
+(aktiver TTL-Sweep statt nur beim Lesen) und kappt danach auf die Maximalgröße;
+`_cache_get` markiert Treffer als zuletzt genutzt. Neue Tests in
+`tests/test_api_cache.py`.
+
 ---
 
 ## 🟡 Niedrig — Defensiv
 
-### 3. `risk.py` — Config-Fehler fallen lautlos auf 0 zurück
+### 3. `risk.py` — Config-Fehler fallen lautlos auf 0 zurück — ⚪ KEIN BUG (verifiziert 2026-06-08)
 
 **Datei:** `collectorcrypt/trader/risk.py`, `_limits()`
 
@@ -61,8 +67,11 @@ Wenn ein Config-Attribut falsch benannt oder nicht gesetzt ist, wird
 stillschweigend `0` (= deaktiviert) verwendet. Ein Tippfehler im Config-Key
 schaltet damit unbemerkt ein Risiko-Limit ab.
 
-**Fix:** Beim Start explizit validieren dass alle erwarteten Attribute
-vorhanden sind, oder zumindest ein Warning loggen wenn ein Fallback greift.
+**Verifikation:** `self._cfg` ist immer ein `TraderConfig` (frozen dataclass);
+alle fünf abgefragten Felder sind als Dataclass-Felder garantiert vorhanden, der
+`getattr`-Default kann zur Laufzeit nie greifen. Ein Tippfehler in einem
+*Env-Var-Namen* deaktiviert kein Limit — das Feld behält schlicht seinen
+dokumentierten Default. Über-defensiver, aber harmloser Code; nicht geändert.
 
 ---
 
@@ -97,7 +106,7 @@ O(categories × pages) wird O(pages). 819 Tests grün.
 
 ## 🟡 Niedrig — Zustandsfehler
 
-### 5. `manager.py` — `_cycles` wird nach Neustart auf max. 200 gekappt
+### 5. `manager.py` — `_cycles` wird nach Neustart auf max. 200 gekappt ✅ FIXED (2026-06-08)
 
 **Datei:** `collectorcrypt/trader/manager.py`, `_load_history()`, Zeile 346
 
@@ -112,11 +121,15 @@ egal wie viele echte Zyklen in der DB stehen. Das UI zeigt dann "200 Zyklen" obw
 **Fix:** Echten Count aus dem Store lesen (`self._store.total_cycle_count()`) und
 `_cycles` damit initialisieren.
 
+**Erledigt:** Neue Store-Methode `cycle_count()` (`SELECT COUNT(*) FROM cycles`);
+`_load_history()` initialisiert `_cycles` daraus (Fallback auf `len(history)` wenn die
+Abfrage fehlschlägt). Neue Tests in `tests/test_store.py`.
+
 ---
 
 ## 🟡 Niedrig — Inkonsistenz
 
-### 6. `reconcile.py` — `STALE_AFTER_SEC` wird einmalig beim Import gelesen
+### 6. `reconcile.py` — `STALE_AFTER_SEC` wird einmalig beim Import gelesen ✅ DOKUMENTIERT (2026-06-08)
 
 **Datei:** `collectorcrypt/trader/reconcile.py`, Zeile 41
 
@@ -132,6 +145,11 @@ dokumentiert ist.
 
 **Fix:** Entweder in `TraderConfig` aufnehmen oder zumindest in einem Kommentar
 dokumentieren dass ein Neustart nötig ist.
+
+**Erledigt:** Kein funktionaler Bug — der `Reconciler` wird ohnehin nur einmal
+(`manager.__init__`) konstruiert, würde den Wert also auch dann beim Bau einfrieren,
+wenn er in `TraderConfig` läge; ein Restart ist so oder so nötig. Per Kommentar an der
+Konstante dokumentiert (env-only, Restart erforderlich), wie vom Befund vorgeschlagen.
 
 ---
 
