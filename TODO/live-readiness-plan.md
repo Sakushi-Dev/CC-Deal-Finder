@@ -90,8 +90,11 @@ real money these MUST be set to sane non-zero values first:
 - [ ] `TRADER_GAS_RESERVE_SOL` — SOL kept for fees (currently `0.05`, ok).
 - [ ] Write down the chosen values and the rationale.
 
-**Recommended guard:** make live mode **refuse to start when all risk limits are
-zero**, so the bot can never run uncapped by accident.
+**Recommended guard (DONE 2026-06-08):** live mode now **refuses to start when all risk limits are
+zero** (`live_caps_configured()` in `risk.py`; wired in `engine.run_cycle`). The
+engine returns a halted posture and blocks all orders without sending anything.
+`trader_settings.example.json` ships with non-zero defaults (cycle=$30, day=$100,
+open=3, failures=3). 853 tests green.
 
 ### R3. Connection hardening
 
@@ -154,8 +157,8 @@ caps set so only the cheapest listing can fill:
 - [ ] Verify the reconciler/status-sync interprets a full offer lifecycle
       end-to-end (place → bump → cancel).
 - [ ] Recommended non-zero risk defaults shipped in
-      `trader_settings.example.json`.
-- [ ] "Select all / clear" control in the category dropdown.
+      `trader_settings.example.json`. **(DONE 2026-06-08: cycle=$30, day=$100, open=3, failures=3)**
+- [ ] **"Select all / clear"** control in the category dropdown. **(DONE 2026-06-08)**
 
 ---
 

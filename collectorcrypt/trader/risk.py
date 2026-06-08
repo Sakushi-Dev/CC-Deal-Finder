@@ -255,6 +255,34 @@ class RiskEngine:
         }
 
 
+def live_caps_configured(cfg) -> bool:
+    """Return ``True`` if at least one risk limit is set for live trading.
+
+    All four limits at their default of ``0`` (disabled) means the bot would
+    trade with **no caps whatsoever** — an uncapped live session. The engine
+    uses this guard to refuse live operation when no limits have been
+    configured, so operators are forced to make a deliberate choice before
+    real money moves.
+
+    The check covers the four primary controls:
+
+    * ``max_spend_per_cycle_usd`` — per-cycle spend ceiling
+    * ``max_spend_per_day_usd``   — rolling 24-hour spend ceiling
+    * ``max_open_positions``      — cap on in-flight orders
+    * ``max_consecutive_failures`` — kill switch
+    * ``max_owned_cards``         — inventory cap
+
+    Setting any one of these to a positive value satisfies the guard.
+    """
+    return any([
+        getattr(cfg, "max_spend_per_cycle_usd", 0.0) > 0,
+        getattr(cfg, "max_spend_per_day_usd", 0.0) > 0,
+        getattr(cfg, "max_open_positions", 0) > 0,
+        getattr(cfg, "max_consecutive_failures", 0) > 0,
+        getattr(cfg, "max_owned_cards", 0) > 0,
+    ])
+
+
 def _leading_failures(statuses: list[str]) -> int:
     """Count consecutive ``failed`` statuses from the newest-first list.
 

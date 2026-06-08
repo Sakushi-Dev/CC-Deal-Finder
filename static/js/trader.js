@@ -549,6 +549,18 @@
       toggle.setAttribute('aria-expanded', String(willOpen));
     });
     menu.addEventListener('change', () => catSummary(dd));
+    menu.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-cat-select-all],[data-cat-clear]');
+      if (!btn) return;
+      e.preventDefault();
+      const checkboxes = menu.querySelectorAll('input[type=checkbox]');
+      if (btn.hasAttribute('data-cat-select-all')) {
+        checkboxes.forEach(cb => { cb.checked = true; });
+      } else {
+        checkboxes.forEach(cb => { cb.checked = false; });
+      }
+      catSummary(dd);
+    });
   });
   // Click outside any dropdown closes the open menu.
   document.addEventListener('click', (e) => {

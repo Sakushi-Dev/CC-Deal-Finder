@@ -31,7 +31,7 @@ from .holdings import (SECONDS_PER_DAY, best_active_offer, is_due_for_markdown,
                        recheck_decision, should_bump, should_cancel_offer)
 from .orders import Order, OrderKind, OrderStatus, plan_to_orders
 from .reconcile import StatusSyncer
-from .risk import RiskEngine
+from .risk import RiskDecision, RiskEngine, live_caps_configured
 from .siws import make_session_provider
 from .store import Holding, OrderStore
 from .strategy import (BuyPlan, build_plan, diagnose_listings,
@@ -264,8 +264,43 @@ class TradeEngine:
         risk_decision = None
         risk_blocked: list[Order] = []
         if live:
-            risk_decision = RiskEngine(self._cfg, self._store).evaluate(
-                planned_orders)
+            if not live_caps_configured(self._cfg):
+                # R2 guard: refuse to trade live with all risk limits at 0.
+                # An uncapped live session could drain the wallet without bound;
+                # require the operator to set at least one limit deliberately.
+                _halt = ("all risk limits are 0 — set at least one before "
+                         "live trading (TRADER_MAX_SPEND_PER_CYCLE_USD, "
+                         "TRADER_MAX_SPEND_PER_DAY_USD, "
+                         "TRADER_MAX_OPEN_POSITIONS, or "
+                         "TRADER_MAX_CONSECUTIVE_FAILURES)")
+                risk_decision = RiskDecision(
+                    allowed=[],
+                    blocked=[(o, _halt) for o in planned_orders],
+                    halted=True, halt_reason=_halt, breaches=[_halt],
+                    posture={
+                        "enabled": False, "halted": True,
+                        "halt_reason": _halt,
+                        "limits": {
+                            "max_spend_per_cycle_usd": 0,
+                            "max_spend_per_day_usd": 0,
+                            "max_open_positions": 0,
+                            "max_owned_cards": 0,
+                            "max_consecutive_failures": 0,
+                        },
+                        "usage": {
+                            "open_positions": 0, "spend_today": 0.0,
+                            "owned_cards": 0, "consecutive_failures": 0,
+                        },
+                        "cycle": {
+                            "planned_spend": 0.0, "allowed": 0,
+                            "blocked": len(planned_orders),
+                        },
+                        "breaches": [_halt],
+                    },
+                )
+            else:
+                risk_decision = RiskEngine(self._cfg, self._store).evaluate(
+                    planned_orders)
             for order, reason in risk_decision.blocked:
                 if not order.is_terminal:
                     order.transition(OrderStatus.FAILED,

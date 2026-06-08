@@ -118,6 +118,10 @@
               <span class="cat-caret" aria-hidden="true">▾</span>
             </button>
             <div class="cat-menu" hidden>
+              <div class="cat-actions">
+                <button type="button" class="cat-action" data-cat-select-all>Select all</button>
+                <button type="button" class="cat-action" data-cat-clear>Clear</button>
+              </div>
               {% for opt in f.options %}
               <label class="cat-option">
                 <input type="checkbox" value="{{ opt }}"

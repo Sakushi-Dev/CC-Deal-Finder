@@ -20,7 +20,7 @@ from .orders import (Order, OrderError, OrderKind, OrderStatus,
                      make_client_order_id, plan_to_orders)
 from .reconcile import (Reconciler, ReconciliationReport, StatusSyncer,
                         StatusSyncReport)
-from .risk import RiskDecision, RiskEngine
+from .risk import RiskDecision, RiskEngine, live_caps_configured
 from .siws import (PrivySiwsProvider, check_live_ready,
                    make_session_provider)
 from .store import OrderStore
@@ -32,7 +32,7 @@ __all__ = [
     "Order", "OrderError", "OrderKind", "OrderStatus",
     "make_client_order_id", "plan_to_orders",
     "OrderStore", "Reconciler", "ReconciliationReport", "StatusSyncer",
-    "StatusSyncReport", "RiskEngine", "RiskDecision",
+    "StatusSyncReport", "RiskEngine", "RiskDecision", "live_caps_configured",
     "AuthSession", "SessionProvider", "NullSessionProvider",
     "StaticTokenProvider",
     "CCTradingClient", "CCApiError", "CCAuthError", "CCRateLimitError",

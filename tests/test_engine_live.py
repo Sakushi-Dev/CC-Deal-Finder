@@ -53,7 +53,10 @@ def make_engine(cfg=None, *, wallet=None, store=None, provider=None,
 
 
 def armed_cfg():
-    return make_config(live=True, auth_provider="static", cc_token="tok")
+    # A kill switch of 3 also satisfies live_caps_configured(), so the R2 guard
+    # (all risk limits = 0 → refuse to run) does not fire for these tests.
+    return make_config(live=True, auth_provider="static", cc_token="tok",
+                       max_consecutive_failures=3)
 
 
 # --------------------------------------------------------------------------- #
@@ -449,7 +452,8 @@ def test_accept_pass_skips_offer_below_min_market(store, monkeypatch):
                         lambda **kw: fake)
     _seed_floored_listing(store, nft="A1")
     cfg = make_config(live=True, auth_provider="static", cc_token="tok",
-                      offer_accept_min_market_pct=80.0)  # 80% of 20 = 16
+                      offer_accept_min_market_pct=80.0,  # 80% of 20 = 16
+                      max_consecutive_failures=3)
     engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store)
     report = engine.run_cycle()
     assert report["offers_accepted"][0]["status"] == "skipped"
@@ -795,3 +799,25 @@ def test_order_states_counts():
 
 def test_order_states_empty():
     assert _order_states([]) == {}
+
+
+# --------------------------------------------------------------------------- #
+# R2 guard: refuse live trading when all risk limits are 0
+# --------------------------------------------------------------------------- #
+def test_live_cycle_refused_when_all_risk_limits_zero(store, monkeypatch):
+    # An armed live cycle with every risk cap at 0 must block all orders and
+    # surface a halted posture — the bot must not run uncapped with real funds.
+    fake = FakeClient()
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    # all caps = 0 (the default make_config has no risk limits set)
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok")
+    source = _source_with(_raw_card("N1", price="10", insured=200))
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True),
+                         store=store, source=source)
+    report = engine.run_cycle()
+    # Risk guard fires: posture reports halted
+    assert report["risk"]["halted"] is True
+    assert "risk limits" in report["risk"]["halt_reason"].lower()
+    # No live orders were sent despite there being a candidate.
+    assert fake.call_names() == []

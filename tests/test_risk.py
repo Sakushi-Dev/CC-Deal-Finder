@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from collectorcrypt.trader.orders import OrderKind, OrderStatus
-from collectorcrypt.trader.risk import RiskEngine, _leading_failures
+from collectorcrypt.trader.risk import RiskEngine, _leading_failures, live_caps_configured
 
 from .conftest import make_buy, make_config, make_list, make_offer
 
@@ -320,3 +320,23 @@ def test_cycle_planned_spend_in_posture():
     engine = RiskEngine(cfg, FakeRiskStore())
     decision = engine.evaluate([make_buy(price_usd=10), make_offer(nft="B", price_usd=5)])
     assert decision.posture["cycle"]["planned_spend"] == 15.0
+
+
+# --------------------------------------------------------------------------- #
+# live_caps_configured guard (R2 — refuse uncapped live trading)
+# --------------------------------------------------------------------------- #
+def test_live_caps_configured_false_when_all_zero():
+    cfg = make_config()  # all caps default to 0
+    assert live_caps_configured(cfg) is False
+
+
+@pytest.mark.parametrize("kwarg,value", [
+    ("max_spend_per_cycle_usd", 30),
+    ("max_spend_per_day_usd", 100),
+    ("max_open_positions", 3),
+    ("max_consecutive_failures", 3),
+    ("max_owned_cards", 5),
+])
+def test_live_caps_configured_true_when_any_set(kwarg, value):
+    cfg = make_config(**{kwarg: value})
+    assert live_caps_configured(cfg) is True
