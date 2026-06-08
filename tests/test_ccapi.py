@@ -206,9 +206,11 @@ def test_update_offer_body():
 
 def test_create_listing_body():
     client, http = make_client([FakeResponse(200, {"transaction": "tx"})])
-    client.create_listing(nft="NFT", price=25.0)
-    assert http.calls[0]["json"] == {"nftAddress": "NFT", "price": 25.0,
-                                     "currency": "USDC"}
+    client.create_listing(nft="NFT", card_id="CARD1", price=25.0, wallet="W")
+    assert http.calls[0]["url"].endswith("marketplace/list")
+    assert http.calls[0]["json"] == {"cardId": "CARD1", "currency": "USDC",
+                                     "nftAddress": "NFT", "price": 25.0,
+                                     "wallet": "W"}
 
 
 def test_broadcast_body():
@@ -226,8 +228,10 @@ def test_broadcast_body_with_wallet_and_nft():
 
 def test_cancel_listing_body():
     client, http = make_client([FakeResponse(200, {"ok": True})])
-    client.cancel_listing(listing_id="L1")
-    assert http.calls[0]["json"] == {"id": "L1"}
+    client.cancel_listing(nft="NFT", wallet="W")
+    assert http.calls[0]["url"].endswith("marketplace/cancel-listing")
+    assert http.calls[0]["json"] == {"coin": "USDC", "seller": "W",
+                                     "tokenMint": "NFT", "wallet": "W"}
 
 
 def test_cancel_offer_body():
@@ -431,7 +435,7 @@ def test_read_exhausts_max_retries():
     lambda c: c.make_offer(nft="N", card_id="C", price=1.0, wallet="W"),
     lambda c: c.update_offer(nft="N", price=1.0, wallet="W"),
     lambda c: c.cancel_offer(nft="N", wallet="W"),
-    lambda c: c.create_listing(nft="N", price=1.0),
+    lambda c: c.create_listing(nft="N", card_id="C", price=1.0, wallet="W"),
     lambda c: c.broadcast(signed_tx="S"),
 ])
 def test_write_never_retries_on_5xx(call):

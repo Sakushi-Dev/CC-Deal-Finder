@@ -278,14 +278,20 @@ class LiveExecutor:
         if not getattr(self._wallet, "can_sign", False):
             self._fail(order, "live executor without a signing wallet")
             return order
+        # The verified marketplace/list body requires the card's internal CC id;
+        # a listing without it would be rejected with 400, so fail safely (no
+        # broadcast) before touching the client.
+        if not order.card_id:
+            self._fail(order, "relist missing card_id (cannot build listing)")
+            return order
         try:
             if not self._preflight_relist(order):
                 return order
             order.transition(OrderStatus.SUBMITTED, detail="creating listing")
             self._persist(order)
             resp = self._client.create_listing(
-                nft=order.nft, price=order.price_usd,
-                currency=order.currency or "USDC",
+                nft=order.nft, card_id=order.card_id, price=order.price_usd,
+                wallet=self._wallet.address, currency=order.currency or "USDC",
             )
             tx = _extract_tx(resp)
             external_id = _extract_external_id(resp)

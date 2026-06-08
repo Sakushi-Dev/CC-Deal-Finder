@@ -204,6 +204,36 @@ Capture: [requests/accept_offer.bash](../tools/captures/requests/accept_offer.ba
 
 ---
 
+## List card (relist) ✅ VERIFIED (DevTools capture 2026-06-08)
+
+`POST marketplace/list`
+
+```jsonc
+{ "cardId": "<cc card id>", "currency": "USDC", "nftAddress": "<nft>",
+  "price": <ask>, "wallet": "<our wallet>" }
+```
+
+Like make-offer it needs the card's internal CC id (`cardId`) plus the seller
+`wallet`. Old assumed body `{ nftAddress, price, currency }` was missing both.
+Returns bare base64 tx. This is the exit/sell side driven by `relist()`.
+
+---
+
+## Cancel listing ✅ VERIFIED (DevTools capture 2026-06-08)
+
+`POST marketplace/cancel-listing`
+
+```jsonc
+{ "coin": "USDC", "seller": "<wallet>", "tokenMint": "<nft>",
+  "wallet": "<wallet>" }
+```
+
+Listing referenced by `tokenMint` + `wallet` (no listing id); `coin` not
+`currency`; `seller` == our `wallet`. Old assumed body `{ nftAddress, id }`
+was wrong. Returns bare base64 tx (no funds move).
+
+---
+
 ## Error & retry policy
 
 Source: [collectorcrypt/trader/ccapi.py](../collectorcrypt/trader/ccapi.py)

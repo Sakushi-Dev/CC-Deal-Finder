@@ -39,6 +39,8 @@ CollectorCrypt / Privy API with the request **and** response inspected.
 | `update-listing` body (markdown) | [x] | DevTools capture 2026-06-07 (E8.3): `{coin,newPrice,seller,tokenMint,wallet}` — bare base64 tx |
 | `card-activity` feed (incoming offers) | [x] | DevTools capture 2026-06-07 (E8.3): `GET card-activity/{nft}?day=60&v2=true` newest-first |
 | `accept-offer` body | [x] | DevTools capture 2026-06-07 (E8.3): `{buyer,currency,nftAddress,price,wallet}` — bare base64 tx |
+| `marketplace/list` body (relist) | [x] | DevTools capture 2026-06-08: `{cardId,currency,nftAddress,price,wallet}` — bare base64 tx |
+| `cancel-listing` body | [x] | DevTools capture 2026-06-08: `{coin,seller,tokenMint,wallet}` — bare base64 tx |
 | Authoritative "sold" signal | [x] | `GET cards/{wallet}/` lists only owned cards — absence = sold/exited. Wired as `ownership_sync` |
 | Current market value of an owned NFT | [x] | `oraclePrice` per card in `cards/{wallet}/`, wired into `_run_market_recheck` (E8.4) |
 | Full test suite | [x] | 846 tests green |
@@ -50,8 +52,6 @@ CollectorCrypt / Privy API with the request **and** response inspected.
 | Area | State | Note |
 |------|-------|------|
 | `marketplace/buy` → broadcast → on-chain settle | [ ] | Never executed (requires a real purchase — irreversible) |
-| `marketplace/list` / relist body | [ ] | Path known, body unverified |
-| `cancel-listing` body | [ ] | Path known, body unverified |
 | Status-sync vocabulary (confirmed/cancelled) | [~] | `checkListingStatus` lacks status words → sync stays failure-safe |
 | Risk limits (spend caps, kill-switch) | [ ] | All default to `0` (disabled) |
 | Dedicated RPC endpoint | [ ] | Still public `mainnet-beta` (rate-limited) |

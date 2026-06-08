@@ -290,21 +290,47 @@ class CCTradingClient:
             body.update(extra)
         return self._request("POST", EP_UPDATE_OFFER, auth=True, json=body)
 
-    def create_listing(self, *, nft: str, price: float, currency: str = "USDC",
+    def create_listing(self, *, nft: str, card_id: str, price: float,
+                       wallet: str, currency: str = "USDC",
                        extra: dict[str, Any] | None = None) -> dict[str, Any]:
-        """List an owned card for sale. Returns a tx to sign (the exit side)."""
-        body = {"nftAddress": nft, "price": price, "currency": currency}
+        """List an owned card for sale. Returns a tx to sign (the exit side).
+
+        VERIFIED body (DevTools capture 2026-06-08):
+        ``{cardId, currency, nftAddress, price, wallet}`` — like make-offer it
+        needs the card's internal CC id (``cardId``) plus the seller ``wallet``.
+        Returns a bare base64 transaction to sign and broadcast.
+        State-changing, never auto-retried.
+        """
+        body = {
+            "cardId": card_id,
+            "currency": currency,
+            "nftAddress": nft,
+            "price": price,
+            "wallet": wallet,
+        }
         if extra:
             body.update(extra)
         return self._request("POST", EP_LIST, auth=True, json=body)
 
-    def cancel_listing(self, *, nft: str = "", listing_id: str = ""
-                       ) -> dict[str, Any]:
-        body: dict[str, Any] = {}
-        if nft:
-            body["nftAddress"] = nft
-        if listing_id:
-            body["id"] = listing_id
+    def cancel_listing(self, *, nft: str, wallet: str, currency: str = "USDC",
+                       extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Withdraw an active listing. Returns a tx to sign (no funds move).
+
+        VERIFIED body (DevTools capture 2026-06-08):
+        ``{coin, seller, tokenMint, wallet}`` — the currency field is ``coin``,
+        the mint is ``tokenMint`` and there is **no** listing id; the listing is
+        identified by ``tokenMint`` + ``wallet`` (``seller`` == our wallet).
+        Returns a bare base64 transaction to sign and broadcast.
+        State-changing, never auto-retried.
+        """
+        body = {
+            "coin": currency,
+            "seller": wallet,
+            "tokenMint": nft,
+            "wallet": wallet,
+        }
+        if extra:
+            body.update(extra)
         return self._request("POST", EP_CANCEL_LISTING, auth=True, json=body)
 
     def cancel_offer(self, *, nft: str, wallet: str, currency: str = "USDC",

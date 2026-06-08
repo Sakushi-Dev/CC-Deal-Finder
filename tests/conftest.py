@@ -253,13 +253,13 @@ class FakeClient:
             "update_offer",
             {"transaction": "UNSIGNED-UPDATE-OFFER-TX"})
 
-    def create_listing(self, *, nft, price, currency="USDC", extra=None):
-        self._record("create_listing", nft=nft, price=price, currency=currency,
-                     extra=extra)
+    def create_listing(self, *, nft, card_id, price, wallet, currency="USDC",
+                       extra=None):
+        self._record("create_listing", nft=nft, card_id=card_id, price=price,
+                     wallet=wallet, currency=currency, extra=extra)
         self._maybe_raise("create_listing")
         return self.responses.get(
-            "create_listing",
-            {"transaction": "UNSIGNED-LIST-TX", "listingId": "lst-1"})
+            "create_listing", {"data": "UNSIGNED-LIST-TX"})
 
     def update_listing(self, *, nft, price, wallet, currency="USDC",
                        extra=None):
@@ -283,10 +283,12 @@ class FakeClient:
         self._maybe_raise("broadcast")
         return self.broadcast_response
 
-    def cancel_listing(self, *, nft="", listing_id=""):
-        self._record("cancel_listing", nft=nft, listing_id=listing_id)
+    def cancel_listing(self, *, nft, wallet, currency="USDC", extra=None):
+        self._record("cancel_listing", nft=nft, wallet=wallet,
+                     currency=currency, extra=extra)
         self._maybe_raise("cancel_listing")
-        return self.responses.get("cancel_listing", {"status": "ok"})
+        return self.responses.get("cancel_listing",
+                                  {"data": "UNSIGNED-CANCEL-LISTING-TX"})
 
     def cancel_offer(self, *, nft="", wallet="", currency="USDC",
                      keep_in_escrow=False, extra=None):
@@ -403,4 +405,7 @@ def make_offer(**kw: Any) -> Order:
 
 def make_list(**kw: Any) -> Order:
     kw.setdefault("market_usd", 20.0)
+    # A real listing carries the card's internal CC id (required by the verified
+    # marketplace/list body); default it so live-path tests pass the guard.
+    kw.setdefault("card_id", "CARD123")
     return make_order(OrderKind.LIST, **kw)
