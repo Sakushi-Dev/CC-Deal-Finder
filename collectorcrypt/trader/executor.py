@@ -135,7 +135,8 @@ class LiveExecutor:
                  client: CCTradingClient | None = None,
                  store=None,
                  available_volume: float = 0.0,
-                 cfg=None) -> None:
+                 cfg=None,
+                 ledger=None) -> None:
         self._wallet = wallet
         self._rpc_url = rpc_url
         self._session_provider = session_provider
@@ -146,6 +147,9 @@ class LiveExecutor:
         )
         self._store = store
         self._cfg = cfg
+        # Append-only transaction ledger (provable trade history). Optional; a
+        # money event is recorded only when one is wired in. Never raises.
+        self._ledger = ledger
         # Budget envelope for this cycle. Each confirmed buy / opened offer
         # decrements it; an order that would exceed it is failed (a safety net
         # on top of the planner, which already sizes within the budget).
@@ -206,6 +210,7 @@ class LiveExecutor:
         followups: list[Order] = []
         if order.status is OrderStatus.CONFIRMED:
             self._remaining = max(0.0, self._remaining - order.price_usd)
+            self._record_txn(order, "buy")
             self._record_acquisition(order)
             if order.resell_usd > 0:
                 relist = relist_order_for(order)
@@ -247,9 +252,11 @@ class LiveExecutor:
         if order.status is OrderStatus.OPEN:
             # Reserve the committed amount so we do not over-commit the budget.
             self._remaining = max(0.0, self._remaining - order.price_usd)
+            self._record_txn(order, "offer_placed")
         elif order.status is OrderStatus.CONFIRMED:
             # An offer that filled on submit is a real acquisition + spend.
             self._remaining = max(0.0, self._remaining - order.price_usd)
+            self._record_txn(order, "offer_filled")
             self._record_acquisition(order)
         return order
 
@@ -289,6 +296,7 @@ class LiveExecutor:
             self._sign_and_broadcast(order, tx, external_id,
                                      confirm_detail="listing is live")
             if order.status is OrderStatus.CONFIRMED:
+                self._record_txn(order, "listed")
                 self._record_listed(order)
             return order
         except Exception as exc:  # noqa: BLE001 - one bad relist must not abort the batch
@@ -342,6 +350,7 @@ class LiveExecutor:
             order.signature = signature
         order.detail = f"bumped offer to {order.price_usd}"
         self._persist(order)
+        self._record_txn(order, "offer_bumped")
         return order
 
     def cancel_offer(self, order: Order) -> Order:
@@ -374,6 +383,7 @@ class LiveExecutor:
                          detail="cancelled offer (escrow refunded)",
                          signature=signature or order.signature)
         self._persist(order)
+        self._record_txn(order, "offer_cancelled")
         return order
 
     def markdown_listing(self, order: Order, new_price: float) -> Order:
@@ -413,6 +423,7 @@ class LiveExecutor:
         order.transition(OrderStatus.CONFIRMED,
                          detail=f"marked down to {order.price_usd}",
                          signature=signature or order.signature)
+        self._record_txn(order, "markdown")
         return order
 
     def accept_offer(self, order: Order, buyer: str, price: float) -> Order:
@@ -454,6 +465,7 @@ class LiveExecutor:
             OrderStatus.CONFIRMED,
             detail=f"accepted offer of {order.price_usd} from {buyer}",
             signature=signature or order.signature)
+        self._record_txn(order, "offer_accepted")
         return order
 
     def _raw_sign_broadcast(self, order: Order, tx: str, *,
@@ -628,6 +640,28 @@ class LiveExecutor:
             self._store.upsert_order(order)
         except Exception as exc:  # noqa: BLE001 - persistence failure must not abort a live send
             logger.error("Failed to persist order %s: %s", order.id, exc)
+
+    # ------------------------------------------------------------------ #
+    # Audit trail — provable transaction record + activity log
+    # ------------------------------------------------------------------ #
+    def _record_txn(self, order: Order, event: str) -> None:
+        """Log a money event and append it to the transaction ledger.
+
+        Both are best-effort and only for real (non-simulated) orders. The INFO
+        log feeds the bot activity log; the ledger feeds the provable CSV trade
+        history. Neither may ever abort a live send.
+        """
+        logger.info(
+            "%s: %s '%s' %.2f %s (nft=%s, sig=%s)",
+            event, order.kind.value, order.name or "?", order.price_usd,
+            order.currency or "USDC", order.nft, order.signature or "-")
+        if self._ledger is None:
+            return
+        try:
+            self._ledger.record_order(order, event=event)
+        except Exception as exc:  # noqa: BLE001 - a ledger write must never abort a live send
+            logger.error("Failed to record transaction for %s: %s",
+                         order.nft, exc)
 
     # ------------------------------------------------------------------ #
     # Holdings lifecycle (ETAPPE 5) — best-effort, never aborts a send

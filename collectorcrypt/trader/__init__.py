@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .auth import (AuthSession, NullSessionProvider, SessionProvider,
                    StaticTokenProvider)
+from .audit import (TransactionLedger, configure_bot_logging)
 from .ccapi import (CCApiError, CCAuthError, CCClientError, CCNetworkError,
                     CCRateLimitError, CCServerError, CCTradingClient, redact)
 from .config import TraderConfig, load_config
@@ -37,4 +38,5 @@ __all__ = [
     "CCTradingClient", "CCApiError", "CCAuthError", "CCRateLimitError",
     "CCClientError", "CCServerError", "CCNetworkError", "redact",
     "PrivySiwsProvider", "make_session_provider", "check_live_ready",
+    "TransactionLedger", "configure_bot_logging",
 ]

@@ -313,6 +313,36 @@ The web dashboard at `/trader` polls `/trader/status` every 4 seconds and render
 - **Settings drawer** — strategy presets (*Direct flip*, *Balanced 50/50*,
   *Patient offers*, custom), all tuning knobs with info buttons
 
+### Audit trail (bot log + transaction ledger)
+
+For provable record-keeping (e.g. tax or regulatory evidence) the bot writes two
+operational records. Both are **off by default in tests**, contain real wallet /
+trade data, and are **git-ignored** — never commit them.
+
+| Record | Default path | Env var | Contents |
+| --- | --- | --- | --- |
+| **Bot activity log** | `logs/bot.log` | `TRADER_LOG_PATH` | Per-cycle summary (mode, scanned, planned buys/offers, fills, order states) + each money action with success/failure. Rotating, 1 MB × 5 files. |
+| **Transaction ledger** | `records/transactions.csv` | `TRADER_LEDGER_PATH` | One append-only CSV row per **real** transaction. |
+
+The ledger columns are:
+
+```
+timestamp_utc, timestamp_epoch, cycle_id, event, kind, card_name, category,
+nft_address, card_id, price_usd, market_usd, currency, signature, status, detail
+```
+
+Recorded `event`s: `buy`, `offer_placed`, `offer_filled`, `listed`,
+`offer_bumped`, `offer_cancelled`, `markdown`, `offer_accepted`, `sold`.
+
+Notes:
+
+- Only **real (non-simulated)** trades are recorded — dry-run and demo cycles
+  write nothing.
+- The on-chain `signature` lets anyone re-derive the exact network (gas) fee from
+  a block explorer, so fees stay verifiable without being stored.
+- Set either env var to an **empty value** to disable that record; an absent
+  variable falls back to the default path.
+
 ## Live readiness
 
 > **Status: Beta / dry-run-ready / live-integration in verification.**

@@ -10,11 +10,13 @@ manager never bypasses that gate.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
 from typing import Any
 
+from .audit import configure_bot_logging
 from .config import load_config
 from .engine import TradeEngine
 from .reconcile import Reconciler
@@ -26,6 +28,8 @@ _HISTORY_KEEP = 200
 
 # Runtime store key holding the loop control state so it survives a restart.
 _LOOP_STATE_KEY = "loop_state"
+
+logger = logging.getLogger("collectorcrypt.trader.manager")
 
 
 class TraderManager:
@@ -46,6 +50,12 @@ class TraderManager:
         # Durable persistence + reconciliation foundation (ETAPPE 2).
         self._store = OrderStore()
         self._reconciler = Reconciler(self._store)
+        # Route the bot's activity log to a file (best-effort; an empty path
+        # disables it). Done once here since the manager is the long-lived bot.
+        try:
+            configure_bot_logging(load_config().log_path)
+        except Exception:  # noqa: BLE001 - logging setup must never break startup
+            pass
         # Crash-recovery summary for the operator (ETAPPE 8).
         self._recovery: dict[str, Any] = {"performed": False}
         self._load_history()
@@ -219,12 +229,14 @@ class TraderManager:
                 self._error = str(exc)
                 self._running = False
                 self._updated_at = time.time()
+            logger.error("Cycle aborted (wallet): %s", exc)
             return
         except Exception as exc:  # noqa: BLE001 - surface to UI
             with self._lock:
                 self._error = f"Cycle error: {exc}"
                 self._running = False
                 self._updated_at = time.time()
+            logger.error("Cycle error: %s", exc)
             return
 
         record_entry = _history_record(report) if record else None
@@ -235,6 +247,20 @@ class TraderManager:
             if record_entry is not None:
                 self._cycles += 1
                 self._history.append(record_entry)
+        self._log_cycle_summary(report)
+
+    @staticmethod
+    def _log_cycle_summary(report: dict[str, Any]) -> None:
+        """Emit one concise activity-log line summarising a finished cycle."""
+        try:
+            logger.info(
+                "Cycle done [%s]: scanned=%s planned_buys=%s planned_offers=%s "
+                "fills_ok=%s order_states=%s",
+                report.get("mode", "?"), report.get("scanned", 0),
+                report.get("planned_buys", 0), report.get("planned_offers", 0),
+                report.get("fills_ok", 0), report.get("order_states", {}))
+        except Exception:  # noqa: BLE001 - logging must never break a cycle
+            pass
 
     # ------------------------------------------------------------------ #
     # State

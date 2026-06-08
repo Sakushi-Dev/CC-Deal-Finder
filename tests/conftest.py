@@ -124,6 +124,8 @@ _CONFIG_DEFAULTS: dict[str, Any] = dict(
     max_pages=5,
     allowed_marketplaces=("CC",),
     loop_interval_sec=60.0,
+    ledger_path="",
+    log_path="",
     auto_resume=False,
 )
 
@@ -355,6 +357,19 @@ class FakeSessionProvider:
 # --------------------------------------------------------------------------- #
 # Real store on an isolated temp DB
 # --------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def _disable_audit_records(monkeypatch) -> None:
+    """Keep the audit trail off by default so tests write no stray files.
+
+    ``load_config()`` (used by the manager) defaults the ledger/log paths to
+    real directories; clearing the env vars disables both records unless a test
+    opts in by constructing a ledger / configuring logging with an explicit
+    path. Prevents a stray ``logs/`` or ``records/`` folder in the workspace.
+    """
+    monkeypatch.setenv("TRADER_LEDGER_PATH", "")
+    monkeypatch.setenv("TRADER_LOG_PATH", "")
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch) -> OrderStore:
     """A real :class:`OrderStore` backed by an isolated temp database."""

@@ -507,6 +507,26 @@ def test_ownership_sync_marks_absent_holding_sold(store, monkeypatch):
     assert store.get_holding("GONE").sold_at is not None
 
 
+def test_ownership_sync_records_sold_to_ledger(store, monkeypatch, tmp_path):
+    import csv
+
+    ledger_path = tmp_path / "records" / "transactions.csv"
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {"filterNFtCard": [], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="GONE", name="Blastoise")
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      ledger_path=str(ledger_path))
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store)
+    engine.run_cycle()
+    with open(ledger_path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert [r["event"] for r in rows] == ["sold"]
+    assert rows[0]["nft_address"] == "GONE"
+    assert rows[0]["card_name"] == "Blastoise"
+
+
 def test_ownership_sync_keeps_owned_holding(store, monkeypatch):
     fake = FakeClient()
     fake.responses["get_owned_cards"] = {

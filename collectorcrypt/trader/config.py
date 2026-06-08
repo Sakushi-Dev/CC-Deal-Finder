@@ -147,6 +147,12 @@ class TraderConfig:
     # Loop
     loop_interval_sec: float
 
+    # Operational records (audit trail). The transaction ledger is an
+    # append-only CSV of every real money event (provable trade history); the
+    # bot log is a human-readable activity log. Empty disables that record.
+    ledger_path: str
+    log_path: str
+
     # Resilience (ETAPPE 8). When true, a running auto-loop is resumed after an
     # application restart/crash (env-only, like the live switch, so a crash can
     # never silently start trading the operator did not configure).
@@ -226,5 +232,11 @@ def load_config() -> TraderConfig:
         max_pages=_get_int(src, "TRADER_MAX_PAGES", 10),
         allowed_marketplaces=_get_tuple(src, "TRADER_ALLOWED_MARKETPLACES", ("CC",)),
         loop_interval_sec=_get_float(src, "TRADER_LOOP_INTERVAL_SEC", 300.0),
+        # Audit paths: an ABSENT env var falls back to the default location; an
+        # explicitly-set EMPTY value disables that record (so it can be turned
+        # off deliberately, which _get_str's "empty == default" cannot express).
+        ledger_path=os.environ.get(
+            "TRADER_LEDGER_PATH", "records/transactions.csv").strip(),
+        log_path=os.environ.get("TRADER_LOG_PATH", "logs/bot.log").strip(),
         auto_resume=_get_bool(os.environ, "TRADER_AUTO_RESUME", False),
     )

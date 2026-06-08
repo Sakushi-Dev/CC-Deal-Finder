@@ -53,6 +53,11 @@ Thumbs.db
 *.db-shm
 *.db-wal
 
+# Bot activity log + transaction ledger (contain real wallet / trade data;
+# evidence files, NEVER commit)
+logs/
+records/
+
 # Project-specific caches / outputs
 .cache/
 cache/

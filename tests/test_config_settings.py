@@ -132,6 +132,29 @@ def test_auto_resume_env_only(clean_env, settings_file):
     assert load_config().auto_resume is True
 
 
+def test_audit_paths_default_when_absent(clean_env, settings_file):
+    cfg = load_config()
+    assert cfg.ledger_path == "records/transactions.csv"
+    assert cfg.log_path == "logs/bot.log"
+
+
+def test_audit_paths_empty_env_disables(clean_env, settings_file):
+    # An explicitly-empty value disables the record (no default fallback).
+    clean_env.setenv("TRADER_LEDGER_PATH", "")
+    clean_env.setenv("TRADER_LOG_PATH", "")
+    cfg = load_config()
+    assert cfg.ledger_path == ""
+    assert cfg.log_path == ""
+
+
+def test_audit_paths_env_override(clean_env, settings_file):
+    clean_env.setenv("TRADER_LEDGER_PATH", "/tmp/led.csv")
+    clean_env.setenv("TRADER_LOG_PATH", "/tmp/bot.log")
+    cfg = load_config()
+    assert cfg.ledger_path == "/tmp/led.csv"
+    assert cfg.log_path == "/tmp/bot.log"
+
+
 # --------------------------------------------------------------------------- #
 # Tunables: JSON overrides win over env
 # --------------------------------------------------------------------------- #

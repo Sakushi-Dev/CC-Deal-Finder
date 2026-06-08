@@ -19,6 +19,7 @@ from typing import Any
 
 from ..api import CCClient
 from ..normalize import normalize_card
+from .audit import TransactionLedger
 from .auth import SessionProvider
 from .ccapi import CCApiError, CCTradingClient
 from .config import TraderConfig
@@ -66,13 +67,18 @@ class TradeEngine:
     def __init__(self, cfg: TraderConfig, *, client: CCClient | None = None,
                  wallet: Wallet | None = None,
                  store: OrderStore | None = None,
-                 session_provider: SessionProvider | None = None) -> None:
+                 session_provider: SessionProvider | None = None,
+                 ledger: TransactionLedger | None = None) -> None:
         self._cfg = cfg
         self._client = client or CCClient()
         self._wallet = wallet or Wallet(
             cfg.rpc_url, address=cfg.wallet_address, secret=cfg.wallet_secret
         )
         self._store = store
+        # Append-only transaction ledger (provable trade history). Built from
+        # the configured path by default; an empty path disables it. Only real
+        # money events (the live executor + the sold-signal) ever write to it.
+        self._ledger = ledger or TransactionLedger(cfg.ledger_path)
         # The auth seam (ETAPPE 3/4). Defaults to the configured provider, which
         # is the safe NullSessionProvider unless the operator opted into a real
         # one via TRADER_AUTH_PROVIDER. Live execution (ETAPPE 5) uses this.
@@ -120,6 +126,7 @@ class TradeEngine:
                 store=self._store,
                 available_volume=available_volume,
                 cfg=self._cfg,
+                ledger=self._ledger,
             )
         return DryRunExecutor()
 
@@ -380,6 +387,7 @@ class TradeEngine:
                 sold.append({"nft": holding.nft, "name": holding.name,
                              "error": str(exc)})
                 continue
+            self._record_sold_txn(holding, now=now)
             sold.append({"nft": holding.nft, "name": holding.name})
         return {"checked": len(held), "sold": sold}
 
@@ -391,6 +399,31 @@ class TradeEngine:
         propagates so the caller fails safe (marks nothing sold).
         """
         return set(self._fetch_owned_cards())
+
+    def _record_sold_txn(self, holding: Holding, *, now: float) -> None:
+        """Append a ``sold`` row to the transaction ledger for an exited card.
+
+        A card detected as sold via ownership reconcile left the wallet without
+        a broadcast of ours, so there is no signature; the listed price is the
+        best available proceeds estimate. Best-effort: never aborts the cycle.
+        """
+        try:
+            self._ledger.record(
+                event="sold",
+                kind="list",
+                card_name=holding.name or "",
+                category=holding.category or "",
+                nft_address=holding.nft or "",
+                price_usd=holding.list_price_usd or 0.0,
+                market_usd=(holding.market_usd_current
+                            or holding.market_usd_at_buy or 0.0),
+                status="sold",
+                detail="card left wallet (sold/transferred)",
+                now=now,
+            )
+        except Exception as exc:  # noqa: BLE001 - a ledger write must never abort a cycle
+            logger.error("Failed to record sold transaction for %s: %s",
+                         holding.nft, exc)
 
     def _fetch_owned_cards(self) -> dict[str, dict[str, Any]]:
         """Map every currently-owned NFT address to its raw owned-card payload.
