@@ -6,7 +6,7 @@ Gefundene Schwächen im Code — priorisiert nach Risiko.
 
 ## 🔴 Mittel — Designfehler
 
-### 1. `strategy.py` — `build_plan` ist nicht wirklich pure
+### 1. `strategy.py` — `build_plan` ist nicht wirklich pure ✅ FIXED (2026-06-08)
 
 **Datei:** `collectorcrypt/trader/strategy.py`, Zeile ~325
 
@@ -20,6 +20,10 @@ unpredictable wenn dieselbe Kandidatenliste mehrfach übergeben wird.
 
 **Fix:** `resell_usd` beim Erstellen des `Candidate` setzen (in `_economics`)
 oder eine Kopie anlegen bevor mutiert wird.
+
+**Erledigt:** Beide Stages in `build_plan` nutzen jetzt `dataclasses.replace(cand,
+resell_usd=resale)` statt In-Place-Mutation. Funktion ist wieder side-effect-free.
+819 Tests grün.
 
 ---
 

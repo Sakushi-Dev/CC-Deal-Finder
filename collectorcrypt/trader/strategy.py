@@ -14,7 +14,7 @@ This module knows nothing about HTTP, wallets or signing.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..normalize import to_usd
@@ -322,8 +322,9 @@ def build_plan(candidates: list[Candidate], available_volume: float,
             continue
         if cand.ask_usd > direct_left:
             continue
-        cand.resell_usd = resale
-        plan.items.append(cand)
+        # Copy rather than mutate the input candidate so build_plan stays
+        # side-effect-free (callers may reuse the same candidate list).
+        plan.items.append(replace(cand, resell_usd=resale))
         direct_left -= cand.ask_usd
         taken.add(cand.nft)
 
@@ -341,8 +342,9 @@ def build_plan(candidates: list[Candidate], available_volume: float,
         resale = resell_price(cand.market_usd, cfg)
         if resale <= bid:
             continue
-        cand.resell_usd = resale
-        plan.offers.append(Offer(candidate=cand, offer_usd=bid))
+        # Copy rather than mutate the input candidate (see direct-buy stage).
+        plan.offers.append(
+            Offer(candidate=replace(cand, resell_usd=resale), offer_usd=bid))
         offer_left -= bid
         taken.add(cand.nft)
 
