@@ -59,6 +59,29 @@ def test_all_limits_disabled_allows_everything():
     assert not decision.halted
 
 
+def test_require_caps_halts_when_all_limits_zero():
+    # On a live cycle (require_caps=True) an uncapped config blocks everything.
+    cfg = make_config()  # all caps 0
+    engine = RiskEngine(cfg, FakeRiskStore())
+    orders = [make_buy(nft="A", price_usd=10)]
+    decision = engine.evaluate(orders, require_caps=True)
+    assert decision.halted
+    assert decision.allowed == []
+    assert decision.blocked_orders == orders
+    assert "risk limit" in decision.halt_reason
+    # Posture is built via _posture (not hand-rolled): enabled stays False.
+    assert decision.posture["enabled"] is False
+    assert decision.posture["halted"] is True
+
+
+def test_require_caps_allows_when_one_limit_set():
+    cfg = make_config(max_consecutive_failures=3)
+    engine = RiskEngine(cfg, FakeRiskStore())
+    decision = engine.evaluate([make_buy(price_usd=10)], require_caps=True)
+    assert not decision.halted
+    assert len(decision.allowed) == 1
+
+
 def test_no_store_only_cycle_cap_binds():
     cfg = make_config(max_spend_per_cycle_usd=15)
     engine = RiskEngine(cfg)  # no store

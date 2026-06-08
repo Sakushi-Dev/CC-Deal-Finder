@@ -83,8 +83,13 @@ class RiskEngine:
         """Current risk posture with no pending orders (read-only preview)."""
         return self.evaluate([]).posture
 
-    def evaluate(self, orders: list[Order]) -> RiskDecision:
+    def evaluate(self, orders: list[Order],
+                 *, require_caps: bool = False) -> RiskDecision:
         """Decide which of ``orders`` may proceed under the current limits.
+
+        With ``require_caps`` set (live cycles), the bot refuses to act at all
+        when *no* limit is configured: an uncapped live session could drain the
+        wallet without bound, so at least one cap must be set deliberately.
 
         Never raises: a failure to read usage is treated as a halt (fail-safe),
         so the caller can simply respect ``decision.allowed``.
@@ -94,30 +99,22 @@ class RiskEngine:
             usage = self._usage()
         except Exception as exc:  # noqa: BLE001 - unreadable state must not trade
             logger.warning("Risk usage read failed; halting trading: %s", exc)
-            return RiskDecision(
-                allowed=[], blocked=[(o, "risk state unreadable") for o in orders],
-                halted=True, halt_reason=f"risk state unreadable: {exc}",
-                breaches=["risk state unreadable"],
-                posture=self._posture(limits, usage={}, cycle_spend=0.0,
-                                      allowed=0, blocked=len(orders),
-                                      halted=True,
-                                      halt_reason="risk state unreadable",
-                                      breaches=["risk state unreadable"]),
-            )
+            return self._halt_decision(
+                orders, limits, {}, f"risk state unreadable: {exc}")
+
+        # 0) Caps-required guard (R2): on a live cycle, refuse to trade when
+        #    every limit is still at its default of 0 (uncapped). The operator
+        #    must opt into at least one cap before real money may move.
+        if require_caps and not any(limits.values()):
+            return self._halt_decision(
+                orders, limits, usage,
+                "all risk limits are 0 — set at least one risk limit before "
+                "live trading")
 
         # 1) Kill switch: a run of failures halts everything this cycle.
         halt_reason = self._kill_switch_reason(limits, usage)
         if halt_reason:
-            breaches = [halt_reason]
-            return RiskDecision(
-                allowed=[],
-                blocked=[(o, halt_reason) for o in orders],
-                halted=True, halt_reason=halt_reason, breaches=breaches,
-                posture=self._posture(limits, usage, cycle_spend=0.0,
-                                      allowed=0, blocked=len(orders),
-                                      halted=True, halt_reason=halt_reason,
-                                      breaches=breaches),
-            )
+            return self._halt_decision(orders, limits, usage, halt_reason)
 
         # 2) Per-order caps, evaluated in plan order so earlier (cheaper-first)
         #    orders win the remaining headroom.
@@ -179,6 +176,24 @@ class RiskEngine:
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+    def _halt_decision(self, orders: list[Order], limits: dict[str, float],
+                       usage: dict[str, Any], reason: str) -> RiskDecision:
+        """Build a fully-halted decision (block everything) for ``reason``.
+
+        Centralises the halt construction so the posture schema stays in lock
+        step with :meth:`_posture` instead of being hand-rolled at each call
+        site.
+        """
+        return RiskDecision(
+            allowed=[],
+            blocked=[(o, reason) for o in orders],
+            halted=True, halt_reason=reason, breaches=[reason],
+            posture=self._posture(limits, usage, cycle_spend=0.0,
+                                  allowed=0, blocked=len(orders),
+                                  halted=True, halt_reason=reason,
+                                  breaches=[reason]),
+        )
+
     def _limits(self) -> dict[str, float]:
         return {
             "max_spend_per_cycle_usd": max(0.0, float(
@@ -258,13 +273,12 @@ class RiskEngine:
 def live_caps_configured(cfg) -> bool:
     """Return ``True`` if at least one risk limit is set for live trading.
 
-    All four limits at their default of ``0`` (disabled) means the bot would
-    trade with **no caps whatsoever** — an uncapped live session. The engine
-    uses this guard to refuse live operation when no limits have been
-    configured, so operators are forced to make a deliberate choice before
-    real money moves.
+    All limits at their default of ``0`` (disabled) means the bot would trade
+    with **no caps whatsoever** — an uncapped live session. The engine uses this
+    guard to refuse live operation when no limits have been configured, so
+    operators are forced to make a deliberate choice before real money moves.
 
-    The check covers the four primary controls:
+    The check covers every operator-set control:
 
     * ``max_spend_per_cycle_usd`` — per-cycle spend ceiling
     * ``max_spend_per_day_usd``   — rolling 24-hour spend ceiling
