@@ -349,3 +349,55 @@ def build_plan(candidates: list[Candidate], available_volume: float,
         taken.add(cand.nft)
 
     return plan
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic range bidding (escrow-leak fix)
+# --------------------------------------------------------------------------- #
+def dynamic_bidding_enabled(cfg: TraderConfig) -> bool:
+    """Whether order-book-aware bidding is configured.
+
+    Dynamic range bidding is opt-in: it only kicks in once the operator has set
+    both an opening discount and a ceiling (> 0). Until then offers keep using
+    the static ``offer_discount_pct`` (so existing setups are unchanged).
+    """
+    return cfg.offer_open_discount_pct > 0 and cfg.offer_ceiling_pct > 0
+
+
+def dynamic_offer_bid(ask_usd: float, highest_other_bid: float | None,
+                      cfg: TraderConfig, *, max_price: float) -> float | None:
+    """Order-book-aware bid for one card, or ``None`` to skip it.
+
+    Pure and side-effect-free — the caller supplies the live ``highest_other_bid``
+    (the best competing bid, excluding our own) and the hard ``max_price`` cap
+    (the lowest of: our strategy ceiling, the per-card cap, the remaining offer
+    budget and the resale-profit limit). Logic, with ``ask`` as the reference:
+
+    * ``open_price = ask × (1 − open_discount)`` — our opening lowball (the
+      biggest discount / lowest price), placed when the card is uncontested.
+    * ``ceiling_price = ask × (1 − ceiling)`` — the most we will ever pay.
+
+    Branches by the highest competing bid ``H``:
+
+    * ``H`` below ``open_price`` (or none): bid ``open_price`` — no need to pay
+      more than our lowball to lead.
+    * ``H`` within ``[open_price, cap]``: bid ``H + increment`` — just outbid it.
+    * ``H`` above the cap (would breach our ceiling/budget): return ``None`` —
+      skip, so escrow is never locked on a bid that cannot win cheaply.
+
+    Returns ``None`` whenever even the opening lowball exceeds ``max_price`` (we
+    cannot afford to lead) — escrow is reserved for bids that can actually win.
+    """
+    open_disc = max(0.0, float(cfg.offer_open_discount_pct))
+    ceil_disc = max(0.0, float(cfg.offer_ceiling_pct))
+    open_price = ask_usd * max(0.0, 1.0 - open_disc / 100.0)
+    ceiling_price = ask_usd * max(0.0, 1.0 - ceil_disc / 100.0)
+    cap = min(ceiling_price, max_price)
+    if open_price <= 0 or open_price > cap:
+        return None
+    if highest_other_bid is None or highest_other_bid < open_price:
+        return open_price
+    target = float(highest_other_bid) + max(0.0, float(cfg.offer_increment_usd))
+    if target > cap:
+        return None
+    return target
