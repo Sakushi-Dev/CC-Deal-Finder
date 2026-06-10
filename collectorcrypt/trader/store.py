@@ -534,6 +534,25 @@ class OrderStore:
             row = cur.fetchone()
         return _row_to_holding(row) if row else None
 
+    def backfill_cost_basis(self, nft: str, cost_usd: float) -> bool:
+        """Fill in a holding's *missing* cost basis (restart recovery only).
+
+        The cost basis is immutable once known — :meth:`upsert_holding` never
+        overwrites it, so the 0%-profit markdown floor cannot drift. This is
+        the single, guarded exception: the activity sync may set it when the
+        stored value is still 0 (e.g. the holding row was created without a
+        known buy price). A holding with a positive basis is never touched.
+        Returns ``True`` only when a row was actually updated.
+        """
+        if cost_usd <= 0:
+            return False
+        with self._write_lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE holdings SET cost_usd=? WHERE nft=? AND cost_usd<=0",
+                (cost_usd, nft),
+            )
+            return cur.rowcount > 0
+
     def held_cards(self) -> list[Holding]:
         """Cards we currently own (not yet sold).
 

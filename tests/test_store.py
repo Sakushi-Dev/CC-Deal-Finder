@@ -391,6 +391,29 @@ def test_upsert_holding_keeps_cost_basis_immutable(store):
     assert got.status == "listed"  # mutable column still updated
 
 
+def test_backfill_cost_basis_fills_missing_cost(store):
+    store.upsert_holding(_holding(nft="H1", cost_usd=0.0))
+    assert store.backfill_cost_basis("H1", 42.5) is True
+    assert store.get_holding("H1").cost_usd == 42.5
+
+
+def test_backfill_cost_basis_never_overwrites_known_cost(store):
+    store.upsert_holding(_holding(nft="H1", cost_usd=10.0))
+    assert store.backfill_cost_basis("H1", 99.0) is False
+    assert store.get_holding("H1").cost_usd == 10.0
+
+
+def test_backfill_cost_basis_rejects_non_positive(store):
+    store.upsert_holding(_holding(nft="H1", cost_usd=0.0))
+    assert store.backfill_cost_basis("H1", 0.0) is False
+    assert store.backfill_cost_basis("H1", -5.0) is False
+    assert store.get_holding("H1").cost_usd == 0.0
+
+
+def test_backfill_cost_basis_unknown_nft_is_noop(store):
+    assert store.backfill_cost_basis("nope", 10.0) is False
+
+
 # --------------------------------------------------------------------------- #
 # Holdings — inventory queries
 # --------------------------------------------------------------------------- #
