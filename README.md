@@ -264,6 +264,33 @@ that wallet; Phantom is only where it was created and funded.
   markdown toward cost-basis floor, offer-bumping to re-notify owners, and
   automatic offer-accept once the card has rested at the floor long enough.
 
+### Adaptive strategy (anti-exploitation)
+
+Four refinements stop the bot from leaking capital or being read by a human
+counterparty. **All four default to `0` (off)** so existing setups are
+unchanged; the *Balanced* and *Patient offers* presets switch them on.
+
+- **Dynamic range bidding** — instead of blindly locking escrow on a fixed
+  lowball, the bot reads each card's live order book before bidding. It opens at
+  `TRADER_OFFER_OPEN_DISCOUNT_PCT` below ask when uncontested, outbids a
+  competing bid by `TRADER_OFFER_INCREMENT_USD` while it stays inside the range,
+  and **skips** the card when winning would exceed the ceiling
+  `TRADER_OFFER_CEILING_PCT`, the budget, or the resale-profit floor. Enabled
+  when both the open discount and ceiling are `> 0` (open must be the larger).
+  Falls back to the static `TRADER_OFFER_DISCOUNT_PCT` bid when the book can't be
+  read. Dry-run/demo cycles have no live order book, so they assume every card is
+  uncontested and quote the opening lowball (marked `assumed` in the report).
+- **No self-bidding** — an offer bump is skipped when the bot is already the
+  highest bidder (it would only raise its own escrow for nothing).
+- **Unpredictable markdowns** — `TRADER_MARKDOWN_JITTER_PCT` adds a deterministic
+  `±%` jitter to both markdown timing and step size so the curve can't be waited
+  out. The cost-basis floor is unchanged.
+- **Markdown gas guard** — `TRADER_MARKDOWN_MIN_CHANGE_USD` skips a markdown
+  whose price drop is too small to be worth the SOL gas (markdowns only).
+
+See **[api-executor.md](docs/api-executor.md)** for the full mechanics.
+
+
 ### Setup & run
 
 ```powershell

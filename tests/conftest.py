@@ -100,6 +100,9 @@ _CONFIG_DEFAULTS: dict[str, Any] = dict(
     direct_buy_pct=50.0,
     offer_pct=50.0,
     offer_discount_pct=10.0,
+    offer_open_discount_pct=0.0,
+    offer_ceiling_pct=0.0,
+    offer_increment_usd=0.01,
     offer_max_premium_pct=0.0,
     resell_discount_pct=10.0,
     escalation_volume_usd=1000.0,
@@ -117,6 +120,8 @@ _CONFIG_DEFAULTS: dict[str, Any] = dict(
     markdown_delay_days=3.0,
     markdown_step_pct=1.0,
     markdown_interval_days=3.0,
+    markdown_jitter_pct=0.0,
+    markdown_min_change_usd=0.0,
     offer_accept_delay_days=3.0,
     offer_accept_min_market_pct=0.0,
     market_recheck_hours=24.0,
@@ -323,6 +328,11 @@ class FakeClient:
         self._record("get_card_activity", nft=nft, day=day)
         self._maybe_raise("get_card_activity")
         return self.responses.get("get_card_activity", {"data": []})
+
+    def get_wallet_activity(self, *, wallet, day=None):
+        self._record("get_wallet_activity", wallet=wallet, day=day)
+        self._maybe_raise("get_wallet_activity")
+        return self.responses.get("get_wallet_activity", {"data": []})
 
 
 @pytest.fixture

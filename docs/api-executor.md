@@ -119,9 +119,10 @@ executor to act:
 
 | Pass | Trigger | Action | Endpoint |
 |------|---------|--------|----------|
-| **Offer bump** | `should_bump()` — offer aged past threshold | Re-price up by `TRADER_OFFER_BUMP_USD` | `marketplace/update-offer` |
+| **Offer reprice** | `dynamic_bidding_enabled()` — runs before orders are sent | Re-quote planned offers against the live order book | `GET card-activity/{nft}` |
+| **Offer bump** | `should_bump()` — offer aged past threshold | Re-price up by `TRADER_OFFER_BUMP_USD` (skipped if we already lead) | `marketplace/update-offer` |
 | **Offer cancel** | `should_cancel_offer()` — bumps exhausted | Withdraw offer, refund escrow | `marketplace/cancel-offer` |
-| **Listing markdown** | `is_due_for_markdown()` — listed unsold | Step price toward cost-basis floor | `marketplace/update-listing` |
+| **Listing markdown** | `is_due_for_markdown()` — listed unsold | Step price toward cost-basis floor (jittered timing + size, gas-guarded) | `marketplace/update-listing` |
 | **Offer accept** | `is_due_for_offer_accept()` — at floor long enough | Accept best incoming bid | `marketplace/accept-offer` |
 | **Market re-check** | always | Read-only; updates `oraclePrice` per card | `cards/{wallet}` |
 
@@ -136,7 +137,67 @@ Verified client methods in [collectorcrypt/trader/ccapi.py](../collectorcrypt/tr
 **Safe-failure:** any signing/broadcast/API error leaves that single order
 untouched and the batch continues. Never auto-retried.
 
-Cycle report gains: `bumped`, `cancelled`, `marked_down`, `offers_accepted`, `market_recheck`.
+Cycle report gains: `offer_pricing` (only when dynamic bidding is on),
+`bumped`, `cancelled`, `marked_down`, `offers_accepted`, `market_recheck`.
 
 Strategy source: [collectorcrypt/trader/strategy.py](../collectorcrypt/trader/strategy.py)
 Order model: [collectorcrypt/trader/orders.py](../collectorcrypt/trader/orders.py)
+
+---
+
+## Adaptive strategy (anti-exploitation)
+
+Source: [collectorcrypt/trader/strategy.py](../collectorcrypt/trader/strategy.py),
+[collectorcrypt/trader/holdings.py](../collectorcrypt/trader/holdings.py),
+[collectorcrypt/trader/engine.py](../collectorcrypt/trader/engine.py)
+
+Four refinements stop the bot from leaking capital or being read by a human
+counterparty. **All four default to off** (`0`) so existing setups are
+unchanged; the `balanced` and `patient_offers` presets switch them on.
+
+### 1. Dynamic range bidding (escrow-leak fix)
+
+Blind offering locks USDC escrow on bids that can never win. Instead, on each
+**live** cycle (before any order is signed), `engine._reprice_offers_dynamically`
+re-quotes every planned offer against the card's live activity feed
+(`GET card-activity/{nft}`, excluding our own wallet) using the pure
+`strategy.dynamic_offer_bid`:
+
+- **Uncontested** → bid the opening lowball
+  `ask × (1 − TRADER_OFFER_OPEN_DISCOUNT_PCT/100)`.
+- **A competitor sits inside the range** → outbid it by `TRADER_OFFER_INCREMENT_USD`.
+- **Winning would breach the ceiling** `ask × (1 − TRADER_OFFER_CEILING_PCT/100)`,
+  the per-card cap, the remaining budget, or the resale-profit floor → **skip**
+  the card so escrow stays free for winnable bids.
+
+Offers are funded cheapest-first against the remaining budget. Enabled only when
+both `TRADER_OFFER_OPEN_DISCOUNT_PCT > 0` **and** `TRADER_OFFER_CEILING_PCT > 0`
+(open discount must be the larger number). If the order book cannot be read the
+pass falls back to the static `TRADER_OFFER_DISCOUNT_PCT` bid (kept if it still
+fits) and otherwise drops the offer. Dry-run/demo have no live order book, so
+they treat every card as **uncontested** and quote the opening lowball; those
+entries are marked `assumed` in the `offer_pricing` report to flag the
+simulation assumption.
+
+### 2. No self-bidding on bumps
+
+`engine._run_offer_bump_pass` now reads the order book first and **skips** the
+bump when our own wallet is already the highest bidder — a bump is meant to
+re-surface our offer in the owner's notifications, not to raise our own escrow
+against ourselves. Fails open: an unreadable feed bumps as before.
+
+### 3. Unpredictable markdowns (anti-snipe)
+
+A perfectly regular "−1 % every 3 days" curve can be waited out. `TRADER_MARKDOWN_JITTER_PCT`
+applies a **deterministic** per-card, per-step jitter (`holdings.markdown_jitter_factor`,
+SHA-256 based so it is stable across cycles yet varies between cards) of
+`±jitter %` to **both** the step timing and the step size. The cost-basis floor
+and overall trajectory are unchanged.
+
+### 4. Markdown gas guard
+
+`TRADER_MARKDOWN_MIN_CHANGE_USD` skips any markdown whose price drop is smaller
+than the threshold (`holdings.markdown_change_is_meaningful`), so a few-cent cut
+never costs more in SOL gas than it is worth. Applies to **markdowns only** —
+offer bumps stay intentionally tiny.
+
