@@ -57,9 +57,25 @@ EDITABLE_FIELDS: list[dict[str, Any]] = [
      "min": 0, "max": 100, "step": 1, "group": "Allocation",
      "help": "Share of volume used for standing buy orders (offers). Set Direct% "
              "to 0 to put the whole volume into offers."},
-    {"env": "TRADER_OFFER_DISCOUNT_PCT", "label": "Offer discount % below ask",
+    {"env": "TRADER_OFFER_DISCOUNT_PCT", "label": "Offer discount % below ask (static fallback)",
      "type": "number", "min": 0, "max": 100, "step": 1, "group": "Allocation",
-     "help": "How far below the ask price an offer is placed."},
+     "help": "How far below the ask price an offer is placed when dynamic range "
+             "bidding is off, or as a fallback when the order book cannot be read."},
+    {"env": "TRADER_OFFER_OPEN_DISCOUNT_PCT", "label": "Dynamic open discount % below ask",
+     "type": "number", "min": 0, "max": 100, "step": 1, "group": "Allocation",
+     "help": "Opening lowball for dynamic range bidding (the biggest discount / "
+             "lowest price). Bid here when no one else is bidding. Set this and "
+             "the ceiling > 0 to enable dynamic bidding; 0 = use the static "
+             "fallback above."},
+    {"env": "TRADER_OFFER_CEILING_PCT", "label": "Dynamic ceiling % below ask",
+     "type": "number", "min": 0, "max": 100, "step": 1, "group": "Allocation",
+     "help": "Price ceiling for dynamic range bidding (the smallest discount / "
+             "highest price we will pay). Skip the card if winning would need a "
+             "bid above this. Must be smaller than the open discount."},
+    {"env": "TRADER_OFFER_INCREMENT_USD", "label": "Outbid increment (USDC)",
+     "type": "number", "min": 0, "step": 0.01, "group": "Allocation",
+     "help": "When a competing bid sits inside the range, outbid it by this much "
+             "(e.g. 0.01) instead of dropping our escrow on a losing bid."},
     {"env": "TRADER_OFFER_MAX_PREMIUM_PCT", "label": "Offer max premium % over market",
      "type": "number", "min": 0, "max": 100, "step": 1, "group": "Allocation",
      "help": "Offers ignore the minimum discount, but skip listings priced more "
@@ -128,6 +144,15 @@ EDITABLE_FIELDS: list[dict[str, Any]] = [
     {"env": "TRADER_MARKDOWN_INTERVAL_DAYS", "label": "Days between markdown steps",
      "type": "number", "min": 0, "step": 1, "group": "Holdings",
      "help": "Spacing between successive markdown steps."},
+    {"env": "TRADER_MARKDOWN_JITTER_PCT", "label": "Markdown jitter % (anti-snipe)",
+     "type": "number", "min": 0, "max": 100, "step": 1, "group": "Holdings",
+     "help": "Randomly varies each markdown's timing and step size by ±this %% so "
+             "the markdown pattern is not predictable and cannot be waited out. "
+             "0 = off (fully deterministic)."},
+    {"env": "TRADER_MARKDOWN_MIN_CHANGE_USD", "label": "Min markdown change (USDC)",
+     "type": "number", "min": 0, "step": 0.01, "group": "Holdings",
+     "help": "Skip a markdown whose price drop is smaller than this, so a tiny "
+             "cut never costs more in gas than it is worth. 0 = off."},
     {"env": "TRADER_OFFER_ACCEPT_DELAY_DAYS", "label": "Days after floor → accept offers",
      "type": "number", "min": 0, "step": 1, "group": "Holdings",
      "help": "Once at the cost floor for this long, the best incoming offer "
@@ -203,6 +228,9 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "TRADER_DIRECT_BUY_PCT": "100",
             "TRADER_OFFER_PCT": "0",
             "TRADER_OFFER_DISCOUNT_PCT": "15",
+            "TRADER_OFFER_OPEN_DISCOUNT_PCT": "0",
+            "TRADER_OFFER_CEILING_PCT": "0",
+            "TRADER_OFFER_INCREMENT_USD": "0.01",
             "TRADER_OFFER_MAX_PREMIUM_PCT": "10",
             # Resale
             "TRADER_RESELL_DISCOUNT_PCT": "8",
@@ -220,6 +248,8 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "TRADER_MARKDOWN_DELAY_DAYS": "3",
             "TRADER_MARKDOWN_STEP_PCT": "5",
             "TRADER_MARKDOWN_INTERVAL_DAYS": "2",
+            "TRADER_MARKDOWN_JITTER_PCT": "15",
+            "TRADER_MARKDOWN_MIN_CHANGE_USD": "0.5",
             "TRADER_OFFER_ACCEPT_DELAY_DAYS": "7",
             "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "90",
             "TRADER_MARKET_RECHECK_HOURS": "24",
@@ -244,6 +274,9 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "TRADER_DIRECT_BUY_PCT": "50",
             "TRADER_OFFER_PCT": "50",
             "TRADER_OFFER_DISCOUNT_PCT": "15",
+            "TRADER_OFFER_OPEN_DISCOUNT_PCT": "20",
+            "TRADER_OFFER_CEILING_PCT": "10",
+            "TRADER_OFFER_INCREMENT_USD": "0.01",
             "TRADER_OFFER_MAX_PREMIUM_PCT": "10",
             # Resale
             "TRADER_RESELL_DISCOUNT_PCT": "10",
@@ -261,6 +294,8 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "TRADER_MARKDOWN_DELAY_DAYS": "5",
             "TRADER_MARKDOWN_STEP_PCT": "5",
             "TRADER_MARKDOWN_INTERVAL_DAYS": "3",
+            "TRADER_MARKDOWN_JITTER_PCT": "15",
+            "TRADER_MARKDOWN_MIN_CHANGE_USD": "0.5",
             "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
             "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "85",
             "TRADER_MARKET_RECHECK_HOURS": "24",
@@ -285,6 +320,9 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "TRADER_DIRECT_BUY_PCT": "0",
             "TRADER_OFFER_PCT": "100",
             "TRADER_OFFER_DISCOUNT_PCT": "25",
+            "TRADER_OFFER_OPEN_DISCOUNT_PCT": "30",
+            "TRADER_OFFER_CEILING_PCT": "12",
+            "TRADER_OFFER_INCREMENT_USD": "0.01",
             "TRADER_OFFER_MAX_PREMIUM_PCT": "5",
             # Resale
             "TRADER_RESELL_DISCOUNT_PCT": "10",
@@ -302,6 +340,8 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
             "TRADER_MARKDOWN_DELAY_DAYS": "7",
             "TRADER_MARKDOWN_STEP_PCT": "4",
             "TRADER_MARKDOWN_INTERVAL_DAYS": "4",
+            "TRADER_MARKDOWN_JITTER_PCT": "20",
+            "TRADER_MARKDOWN_MIN_CHANGE_USD": "0.4",
             "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
             "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "85",
             "TRADER_MARKET_RECHECK_HOURS": "24",

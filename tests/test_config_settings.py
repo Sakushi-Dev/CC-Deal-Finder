@@ -197,6 +197,8 @@ def test_holdings_tunable_defaults(clean_env, settings_file):
     assert cfg.markdown_delay_days == 3.0
     assert cfg.markdown_step_pct == 1.0
     assert cfg.markdown_interval_days == 3.0
+    assert cfg.markdown_jitter_pct == 0.0
+    assert cfg.markdown_min_change_usd == 0.0
     assert cfg.offer_accept_delay_days == 3.0
     assert cfg.offer_accept_min_market_pct == 0.0
     assert cfg.market_recheck_hours == 24.0
@@ -213,6 +215,8 @@ def test_holdings_tunables_from_json(clean_env, settings_file):
         "TRADER_MARKDOWN_DELAY_DAYS": "2",
         "TRADER_MARKDOWN_STEP_PCT": "2.5",
         "TRADER_MARKDOWN_INTERVAL_DAYS": "4",
+        "TRADER_MARKDOWN_JITTER_PCT": "15",
+        "TRADER_MARKDOWN_MIN_CHANGE_USD": "0.5",
         "TRADER_OFFER_ACCEPT_DELAY_DAYS": "5",
         "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT": "80",
         "TRADER_MARKET_RECHECK_HOURS": "6",
@@ -227,6 +231,8 @@ def test_holdings_tunables_from_json(clean_env, settings_file):
     assert cfg.markdown_delay_days == 2.0
     assert cfg.markdown_step_pct == 2.5
     assert cfg.markdown_interval_days == 4.0
+    assert cfg.markdown_jitter_pct == 15.0
+    assert cfg.markdown_min_change_usd == 0.5
     assert cfg.offer_accept_delay_days == 5.0
     assert cfg.offer_accept_min_market_pct == 80.0
     assert cfg.market_recheck_hours == 6.0
@@ -237,6 +243,29 @@ def test_offer_bump_max_is_int(clean_env, settings_file):
     val = load_config().offer_bump_max
     assert isinstance(val, int)
     assert val == 4
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic range bidding tunables (escrow-leak fix) — defaults + overrides
+# --------------------------------------------------------------------------- #
+def test_dynamic_offer_defaults(clean_env, settings_file):
+    cfg = load_config()
+    # Off by default so existing setups keep the static offer discount.
+    assert cfg.offer_open_discount_pct == 0.0
+    assert cfg.offer_ceiling_pct == 0.0
+    assert cfg.offer_increment_usd == 0.01
+
+
+def test_dynamic_offer_from_json(clean_env, settings_file):
+    settings_file.write_text(json.dumps({
+        "TRADER_OFFER_OPEN_DISCOUNT_PCT": "30",
+        "TRADER_OFFER_CEILING_PCT": "12",
+        "TRADER_OFFER_INCREMENT_USD": "0.05",
+    }))
+    cfg = load_config()
+    assert cfg.offer_open_discount_pct == 30.0
+    assert cfg.offer_ceiling_pct == 12.0
+    assert cfg.offer_increment_usd == 0.05
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +290,9 @@ def test_security_keys_not_editable(forbidden):
     "TRADER_MARKDOWN_DELAY_DAYS", "TRADER_MARKDOWN_STEP_PCT",
     "TRADER_MARKDOWN_INTERVAL_DAYS", "TRADER_OFFER_ACCEPT_DELAY_DAYS",
     "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT", "TRADER_MARKET_RECHECK_HOURS",
+    "TRADER_OFFER_OPEN_DISCOUNT_PCT", "TRADER_OFFER_CEILING_PCT",
+    "TRADER_OFFER_INCREMENT_USD", "TRADER_MARKDOWN_JITTER_PCT",
+    "TRADER_MARKDOWN_MIN_CHANGE_USD",
 ])
 def test_tunables_are_editable(expected):
     assert expected in settingsmod._EDITABLE_ENV

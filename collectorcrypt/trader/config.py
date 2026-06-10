@@ -106,6 +106,16 @@ class TraderConfig:
     offer_discount_pct: float
     offer_max_premium_pct: float
 
+    # Dynamic range bidding (escrow-leak fix). When both the opening discount
+    # and the ceiling are set (> 0) the live offer price is decided against the
+    # card's current order book: bid our opening lowball when uncontested, just
+    # outbid a competitor inside the range, or skip when winning would exceed
+    # our ceiling. 0/0 disables it and the static ``offer_discount_pct`` is used
+    # (also the fallback when the order book cannot be read, and in dry-run).
+    offer_open_discount_pct: float   # opening lowball, % below ask (bigger discount)
+    offer_ceiling_pct: float         # price ceiling, % below ask (smaller discount)
+    offer_increment_usd: float       # how much to outbid a competing bid by
+
     # Resale (relisting bought cards for a profit)
     resell_discount_pct: float
 
@@ -135,6 +145,8 @@ class TraderConfig:
     markdown_delay_days: float    # unsold this long -> start the markdown curve
     markdown_step_pct: float      # markdown step, % of market value at buy
     markdown_interval_days: float # days between markdown steps
+    markdown_jitter_pct: float    # +/- random jitter on markdown step & interval (anti-snipe)
+    markdown_min_change_usd: float  # skip a markdown whose price drop is below this (gas guard)
     offer_accept_delay_days: float  # days after floor -> accept best offer
     offer_accept_min_market_pct: float  # min market % to accept an incoming bid
     market_recheck_hours: float   # held-card market re-check interval
@@ -209,6 +221,9 @@ def load_config() -> TraderConfig:
         offer_pct=_get_float(src, "TRADER_OFFER_PCT", 0.0),
         offer_discount_pct=_get_float(src, "TRADER_OFFER_DISCOUNT_PCT", 10.0),
         offer_max_premium_pct=_get_float(src, "TRADER_OFFER_MAX_PREMIUM_PCT", 10.0),
+        offer_open_discount_pct=_get_float(src, "TRADER_OFFER_OPEN_DISCOUNT_PCT", 0.0),
+        offer_ceiling_pct=_get_float(src, "TRADER_OFFER_CEILING_PCT", 0.0),
+        offer_increment_usd=_get_float(src, "TRADER_OFFER_INCREMENT_USD", 0.01),
         resell_discount_pct=_get_float(src, "TRADER_RESELL_DISCOUNT_PCT", 10.0),
         escalation_volume_usd=_get_float(src, "TRADER_ESCALATION_VOLUME_USD", 1000.0),
         escalation_max_card_usd=_get_float(src, "TRADER_ESCALATION_MAX_CARD_USD", 1000.0),
@@ -225,6 +240,8 @@ def load_config() -> TraderConfig:
         markdown_delay_days=_get_float(src, "TRADER_MARKDOWN_DELAY_DAYS", 3.0),
         markdown_step_pct=_get_float(src, "TRADER_MARKDOWN_STEP_PCT", 1.0),
         markdown_interval_days=_get_float(src, "TRADER_MARKDOWN_INTERVAL_DAYS", 3.0),
+        markdown_jitter_pct=_get_float(src, "TRADER_MARKDOWN_JITTER_PCT", 0.0),
+        markdown_min_change_usd=_get_float(src, "TRADER_MARKDOWN_MIN_CHANGE_USD", 0.0),
         offer_accept_delay_days=_get_float(src, "TRADER_OFFER_ACCEPT_DELAY_DAYS", 3.0),
         offer_accept_min_market_pct=_get_float(src, "TRADER_OFFER_ACCEPT_MIN_MARKET_PCT", 0.0),
         market_recheck_hours=_get_float(src, "TRADER_MARKET_RECHECK_HOURS", 24.0),
