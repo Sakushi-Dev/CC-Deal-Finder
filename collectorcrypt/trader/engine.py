@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 import uuid
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..api import CCClient
@@ -27,14 +28,16 @@ from .executor import (DryRunExecutor, Executor, LiveExecutor,
                        record_markdown, record_sold_holding)
 from .holdings import (SECONDS_PER_DAY, best_active_offer, is_due_for_markdown,
                        is_due_for_offer_accept, is_due_for_recheck,
+                       markdown_change_is_meaningful, markdown_jitter_factor,
                        markdown_price, next_bump_price, offer_meets_min_market,
                        recheck_decision, should_bump, should_cancel_offer)
 from .orders import Order, OrderKind, OrderStatus, plan_to_orders
 from .reconcile import StatusSyncer
 from .risk import RiskEngine
 from .siws import make_session_provider
-from .store import Holding, OrderStore
+from .store import HOLDING_HELD, HOLDING_LISTED, Holding, OrderStore
 from .strategy import (BuyPlan, build_plan, diagnose_listings,
+                       dynamic_bidding_enabled, dynamic_offer_bid,
                        make_candidates, make_offer_candidates)
 from .wallet import Wallet
 
@@ -56,6 +59,100 @@ def _oracle_price(card: dict[str, Any] | None) -> float | None:
         return None
     try:
         price = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+@dataclass
+class _ActivityState:
+    """Net state of *our* wallet after replaying the activity feed.
+
+    Keyed by NFT address. ``buys``/``listings``/``open_offers`` values carry
+    ``price``, ``at`` (epoch seconds) and card identity (``name``,
+    ``category``, ``card_id``) when the event exposed them; ``exits`` is the
+    set of cards that left the wallet within the feed window.
+    """
+
+    buys: dict[str, dict[str, Any]] = field(default_factory=dict)
+    exits: set[str] = field(default_factory=set)
+    listings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    open_offers: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _event_epoch(event: dict[str, Any]) -> float | None:
+    """Parse an activity event's ``createdAt`` ISO timestamp, if present."""
+    raw = event.get("createdAt")
+    if not raw:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _replay_wallet_activity(feed: list[dict[str, Any]],
+                            wallet: str) -> _ActivityState:
+    """Reduce the wallet activity feed to our wallet's net state.
+
+    The feed arrives newest-first; replaying it oldest-first lets later
+    events naturally supersede earlier ones (an updated offer overrides the
+    original, a cancel closes it, a sale closes a listing). Events not
+    involving ``wallet`` are skipped entirely. Direction semantics are
+    documented on :meth:`TradeEngine._run_activity_sync` and were verified
+    against a captured feed.
+    """
+    state = _ActivityState()
+    for event in reversed(feed):
+        action = str(event.get("action") or "")
+        nft = str(event.get("nftAddress") or "").strip()
+        if not nft:
+            continue
+        from_wallet = str((event.get("from") or {}).get("wallet") or "")
+        to_wallet = str((event.get("to") or {}).get("wallet") or "")
+        ours_from = from_wallet == wallet
+        ours_to = to_wallet == wallet
+        if not (ours_from or ours_to):
+            continue
+        card = event.get("card") or {}
+        info: dict[str, Any] = {
+            "price": _to_price(event.get("amount")),
+            "at": _event_epoch(event),
+            "name": str(card.get("itemName") or ""),
+            "category": str(card.get("category") or ""),
+            "card_id": str(card.get("id") or ""),
+        }
+        if action == "Sale":
+            if ours_to:  # we bought at the listed price
+                state.buys[nft] = info
+                state.exits.discard(nft)
+            elif ours_from:  # our card sold via a direct buy
+                state.exits.add(nft)
+                state.listings.pop(nft, None)
+        elif action == "Offer Accepted":
+            if ours_to:  # our standing offer filled -> we bought
+                state.buys[nft] = info
+                state.exits.discard(nft)
+                state.open_offers.pop(nft, None)
+            elif ours_from:  # we accepted an incoming offer -> we sold
+                state.exits.add(nft)
+                state.listings.pop(nft, None)
+        elif action in ("Offer Made", "Offer Updated") and ours_from:
+            state.open_offers[nft] = info
+        elif action == "Offer Cancelled" and ours_from:
+            state.open_offers.pop(nft, None)
+        elif action in ("List", "Listing Updated") and ours_from:
+            state.listings[nft] = info
+        elif action == "Unlisted" and ours_from:
+            state.listings.pop(nft, None)
+    return state
+
+
+def _to_price(value: Any) -> float | None:
+    """Coerce an activity ``amount`` to a positive float, else ``None``."""
+    try:
+        price = float(value)
     except (TypeError, ValueError):
         return None
     return price if price > 0 else None
@@ -148,6 +245,26 @@ class TradeEngine:
         except Exception:  # noqa: BLE001 - sourcing must never crash a cycle
             return set()
 
+    def _active_offer_nfts(self) -> set[str]:
+        """NFT addresses we already have a resting OPEN offer on.
+
+        These must be excluded from sourcing: re-planning an offer on a card we
+        already bid on makes CC reject the duplicate ("New offer price must be
+        different from the existing offer price"), which fails the order and can
+        trip the consecutive-failure kill switch — stalling all trading. The
+        offer bump/cancel maintenance pass owns the lifecycle of an open offer,
+        so the acquisition stage must not re-touch it.
+
+        Best-effort: an unreadable store (or none) yields an empty set so the
+        cycle simply does not filter rather than aborting.
+        """
+        if self._store is None:
+            return set()
+        try:
+            return {o.nft for o in self._store.open_offers() if o.nft}
+        except Exception:  # noqa: BLE001 - sourcing must never crash a cycle
+            return set()
+
     def _collect_listings(self) -> list[dict[str, Any]]:
         """Fetch + normalize listings across the configured categories/pages.
 
@@ -234,8 +351,12 @@ class TradeEngine:
             near_misses: list = []
         else:
             # Feature 4: drop unpopular (blacklisted) NFTs from sourcing so the
-            # bot never re-acquires a card it already struggled to sell.
-            blacklist = self._blacklisted_nfts()
+            # bot never re-acquires a card it already struggled to sell. Cards
+            # we already have a resting OPEN offer on are excluded too, so the
+            # bot does not re-bid an existing offer (CC rejects that duplicate,
+            # which would fail the order and can trip the failure kill switch);
+            # those offers are managed by the bump/cancel maintenance pass.
+            blacklist = self._blacklisted_nfts() | self._active_offer_nfts()
             listings = self._collect_listings()
             candidates = make_candidates(listings, sol_rate, self._cfg,
                                          blacklist)
@@ -251,6 +372,21 @@ class TradeEngine:
         executor = self._build_executor(available_volume, demo=demo)
         live = isinstance(executor, LiveExecutor) and not demo
         cycle_id = uuid.uuid4().hex
+        # Feature (escrow-leak fix): before the offers are frozen into orders,
+        # reprice them against the live order book on real cycles. Blind offers
+        # lock escrow on bids that can never win; dynamic range bidding instead
+        # bids our opening lowball when a card is uncontested, just outbids a
+        # competitor inside our range, or skips the card when winning would cost
+        # more than our ceiling/budget. Dry-run/demo cannot read the live order
+        # book, so they quote the opening lowball as an explicit uncontested
+        # assumption (marked in the report) instead of silently falling back to
+        # the static bid — the simulation then reflects the configured range.
+        # Acquisition-paused cycles have no offers to reprice.
+        if not acquisition_paused:
+            report_offer_pricing = self._reprice_offers_dynamically(
+                plan, read_book=live)
+        else:
+            report_offer_pricing = None
         # The plan is materialised into typed PLANNED orders; the executor then
         # transitions them (dry-run resolves in-memory, live would send/sign/
         # broadcast). Both modes share this one pipeline.
@@ -292,6 +428,8 @@ class TradeEngine:
         if acquisition_paused:
             report["acquisition_paused"] = True
             report["pause_reason"] = pause_reason
+        if report_offer_pricing is not None:
+            report["offer_pricing"] = report_offer_pricing
 
         # Live maintenance: after placing new buys/offers, (1) reconcile any
         # in-flight orders against CollectorCrypt's authoritative status, then
@@ -302,6 +440,7 @@ class TradeEngine:
         # tripped (something is wrong; do not sign/send more), but the
         # read-only status sync still runs to resolve in-flight state.
         if live and self._store is not None:
+            report["activity_sync"] = self._run_activity_sync()
             report["status_sync"] = self._run_status_sync()
             # Authoritative sold-signal: mark holdings sold once they leave the
             # wallet. Runs before the maintenance passes so a freshly-sold card
@@ -334,6 +473,135 @@ class TradeEngine:
     # ------------------------------------------------------------------ #
     # Live maintenance (ETAPPE 6)
     # ------------------------------------------------------------------ #
+    def _run_activity_sync(self) -> dict[str, Any]:
+        """Rebuild durable state from the wallet's on-chain activity feed.
+
+        Runs first in every live cycle so a restarted bot — same or new
+        settings, even a fresh database — immediately knows which cards it
+        owns, which of those are listed, what each one cost, and which of its
+        offers are still resting on the book. Only events *initiated by or
+        settling to* our wallet matter; everything else in the feed is other
+        people's traffic and is ignored.
+
+        Replay semantics (verified against the captured feed):
+
+        * ``Sale`` — ``from`` is the seller, ``to`` the buyer. ``to == us``
+          means we bought (``amount`` is our cost basis); ``from == us`` means
+          our card sold.
+        * ``Offer Accepted`` — same asset direction: ``from`` is the accepting
+          seller, ``to`` the bidder whose offer filled. ``to == us`` means our
+          standing offer filled (we bought at ``amount``); ``from == us``
+          means we accepted an incoming offer (we sold; ``amount`` is the
+          *net* proceeds after the marketplace fee).
+        * ``Offer Made`` / ``Offer Updated`` from us — our offer is resting at
+          ``amount``; ``Offer Cancelled`` from us closes it.
+        * ``List`` / ``Listing Updated`` from us — the card is listed at
+          ``amount``; ``Unlisted`` from us (or any sale) clears that.
+
+        Store writes are strictly additive/backfilling: existing holdings only
+        gain a cost basis (when ``cost_usd`` is 0) or listing state (when
+        unlisted in the store but listed on-chain); cards we bought per the
+        feed but that are missing from the store entirely are recreated; open
+        offers absent from the store are re-injected as ``OPEN`` orders.
+        Nothing is ever overwritten or marked sold here — the ownership sync
+        that runs right after this pass stays the authoritative exit signal.
+
+        Fails safe: any fetch error recovers nothing and surfaces ``error``.
+        """
+        if self._store is None:
+            return {"checked": 0, "recovered_offers": [],
+                    "recovered_holdings": [], "backfilled": []}
+        try:
+            client = CCTradingClient(session_provider=self._session_provider)
+            payload = client.get_wallet_activity(wallet=self._wallet.address)
+        except CCApiError as exc:
+            return {"error": f"activity fetch failed: {exc}"}
+        except Exception as exc:  # noqa: BLE001 - maintenance must never crash a cycle
+            return {"error": f"activity sync error: {exc}"}
+        feed = payload.get("data") or []
+        state = _replay_wallet_activity(feed, self._wallet.address)
+        report: dict[str, Any] = {"checked": len(feed),
+                                  "recovered_offers": [],
+                                  "recovered_holdings": [],
+                                  "backfilled": []}
+        try:
+            self._apply_activity_state(state, report)
+        except Exception as exc:  # noqa: BLE001
+            report["error"] = f"activity apply error: {exc}"
+        return report
+
+    def _apply_activity_state(self, state: "_ActivityState",
+                              report: dict[str, Any]) -> None:
+        """Write the replayed activity state into the store (additive only)."""
+        store = self._store
+        assert store is not None  # guarded by caller
+        now = time.time()
+
+        # --- Holdings: recreate missing buys, backfill cost/listing state ---
+        for nft, buy in state.buys.items():
+            if nft in state.exits:
+                continue  # bought and later sold inside the feed window
+            holding = store.get_holding(nft)
+            listing = state.listings.get(nft)
+            if holding is None:
+                holding = Holding(
+                    nft=nft,
+                    name=buy.get("name", ""),
+                    category=buy.get("category", ""),
+                    acquired_at=buy.get("at") or now,
+                    cost_usd=buy.get("price") or 0.0,
+                    market_usd_at_buy=buy.get("price") or 0.0,
+                )
+                if listing is not None:
+                    holding.status = HOLDING_LISTED
+                    holding.listed_at = listing.get("at") or now
+                    holding.list_price_usd = listing.get("price")
+                store.upsert_holding(holding)
+                report["recovered_holdings"].append(
+                    {"nft": nft, "cost_usd": holding.cost_usd,
+                     "listed": listing is not None})
+                continue
+            changed: list[str] = []
+            if holding.cost_usd <= 0.0 and (buy.get("price") or 0.0) > 0.0:
+                # The cost basis is immutable in the store; this dedicated
+                # path fills it ONLY while it is still unknown (== 0).
+                if store.backfill_cost_basis(nft, float(buy["price"])):
+                    holding.cost_usd = float(buy["price"])
+                    changed.append("cost_usd")
+                if holding.market_usd_at_buy <= 0.0:
+                    holding.market_usd_at_buy = float(buy["price"])
+                    changed.append("market_usd_at_buy")
+            if (listing is not None and holding.listed_at is None
+                    and holding.status == HOLDING_HELD):
+                holding.status = HOLDING_LISTED
+                holding.listed_at = listing.get("at") or now
+                holding.list_price_usd = listing.get("price")
+                changed.append("listing")
+            if changed:
+                store.upsert_holding(holding)
+                report["backfilled"].append({"nft": nft, "fields": changed})
+
+        # --- Offers: re-inject open offers the store does not know about ---
+        known = {o.nft for o in store.open_offers()}
+        for nft, offer in state.open_offers.items():
+            if nft in known:
+                continue
+            order = Order(
+                kind=OrderKind.OFFER,
+                nft=nft,
+                name=offer.get("name", ""),
+                category=offer.get("category", ""),
+                status=OrderStatus.OPEN,
+                price_usd=offer.get("price") or 0.0,
+                simulated=False,
+                card_id=offer.get("card_id", ""),
+                client_order_id=f"recovered:{int(now * 1000)}:{nft}",
+                detail="recovered from wallet activity feed",
+            )
+            store.upsert_order(order)
+            report["recovered_offers"].append(
+                {"nft": nft, "price_usd": order.price_usd})
+
     def _run_status_sync(self) -> dict[str, Any]:
         """Reconcile in-flight orders against CC's authoritative status.
 
@@ -492,6 +760,106 @@ class TradeEngine:
     # executor. The executor's maintenance actions are SAFE-FAILURE until
     # Etappe 8 verifies the request shapes, so these passes are observable but
     # move no money yet. All run only on the armed live executor and never raise.
+    def _reprice_offers_dynamically(
+            self, plan: BuyPlan, *, read_book: bool = True
+    ) -> list[dict[str, Any]] | None:
+        """Reprice planned offers against the live order book (escrow-leak fix).
+
+        Blind offering locks escrow on bids that can never win. When dynamic
+        range bidding is configured (:func:`dynamic_bidding_enabled`), each
+        planned offer is re-quoted from the card's live activity feed instead:
+        bid our opening lowball when uncontested, just outbid the best competing
+        bid while it stays inside our range, or drop the offer when winning would
+        breach our ceiling, the per-card cap, the remaining budget or the resale
+        profit floor — keeping escrow for bids that can actually fill.
+
+        Offers are processed cheapest-first against a running budget so the
+        limited escrow funds the most affordable wins first. The plan's
+        ``offers`` list is replaced in place with the kept, repriced offers.
+        Returns a per-offer report, or ``None`` when dynamic bidding is off (the
+        static planned bids stand and nothing is recorded). Fails safe: if a
+        card's feed cannot be read, the static planned bid is kept when it still
+        fits the budget, otherwise the offer is dropped.
+
+        When ``read_book`` is false (dry-run/demo) there is no live order book to
+        read, so every card is treated as uncontested and quoted at the opening
+        lowball; each such entry is marked ``assumed`` so the simulation makes
+        the missing competition explicit.
+        """
+        if not dynamic_bidding_enabled(self._cfg):
+            return None
+        cfg = self._cfg
+        our_wallet = self._wallet.address
+        ordered = sorted(plan.offers, key=lambda o: o.candidate.ask_usd)
+        remaining = max(0.0, float(plan.offer_budget))
+        kept: list = []
+        report: list[dict[str, Any]] = []
+        for offer in ordered:
+            cand = offer.candidate
+            cap = min(float(plan.card_cap_usd), remaining, float(cand.resell_usd))
+            if read_book:
+                try:
+                    feed = self._fetch_card_activity(cand.nft)
+                    top = best_active_offer(feed, exclude_wallet=our_wallet)
+                    highest_other = top.amount if top is not None else None
+                    price = dynamic_offer_bid(cand.ask_usd, highest_other, cfg,
+                                              max_price=cap)
+                except Exception as exc:  # noqa: BLE001 - must not crash
+                    # Fail safe: fall back to the static planned bid if it fits.
+                    fallback = round(float(offer.offer_usd), 2)
+                    if (fallback > 0 and fallback <= cap
+                            and fallback < cand.resell_usd):
+                        offer.offer_usd = fallback
+                        remaining -= fallback
+                        kept.append(offer)
+                        report.append({
+                            "nft": cand.nft, "name": cand.name,
+                            "offer_usd": fallback, "status": "fallback",
+                            "detail": f"order book unreadable: {exc}",
+                        })
+                    else:
+                        report.append({
+                            "nft": cand.nft, "name": cand.name,
+                            "status": "skipped",
+                            "detail": f"order book unreadable: {exc}",
+                        })
+                    continue
+                status = "repriced"
+                detail: str | None = None
+            else:
+                # Simulation: no live order book -> assume the card is
+                # uncontested and quote the opening lowball.
+                price = dynamic_offer_bid(cand.ask_usd, None, cfg, max_price=cap)
+                status = "assumed"
+                detail = ("assumed uncontested (no live order book in "
+                          "simulation)")
+            if price is None:
+                report.append({
+                    "nft": cand.nft, "name": cand.name, "status": "skipped",
+                    "detail": "no winnable price within range/budget",
+                })
+                continue
+            price = round(float(price), 2)
+            # Strict guards: never breach the cap or give up the resale profit.
+            if price <= 0 or price > cap or price >= cand.resell_usd:
+                report.append({
+                    "nft": cand.nft, "name": cand.name, "status": "skipped",
+                    "detail": "price exceeds cap or resale floor",
+                })
+                continue
+            offer.offer_usd = price
+            remaining -= price
+            kept.append(offer)
+            entry: dict[str, Any] = {
+                "nft": cand.nft, "name": cand.name,
+                "offer_usd": price, "status": status,
+            }
+            if detail:
+                entry["detail"] = detail
+            report.append(entry)
+        plan.offers = kept
+        return report
+
     def _run_offer_bump_pass(self, executor: Executor) -> list[dict[str, Any]]:
         """Bump aged open offers to re-trigger the owner's notification."""
         if not isinstance(executor, LiveExecutor):
@@ -504,6 +872,25 @@ class TradeEngine:
         results: list[dict[str, Any]] = []
         for order in offers:
             if not should_bump(order, self._cfg, now):
+                continue
+            # Self-bidding guard: a bump exists to re-surface our offer in the
+            # owner's notifications, not to raise it. If the live order book
+            # already shows us as the highest bidder, bumping would lift our own
+            # escrow against ourselves for nothing, so skip it this cycle. The
+            # read fails open — if the feed cannot be read we bump as before
+            # (the safe, pre-existing behaviour) rather than stalling the nudge.
+            try:
+                feed = self._fetch_card_activity(order.nft)
+                top = best_active_offer(feed)
+            except Exception:  # noqa: BLE001 - maintenance must not crash a cycle
+                top = None
+            if top is not None and top.buyer == self._wallet.address:
+                results.append({
+                    "nft": order.nft,
+                    "name": order.name,
+                    "status": "skipped",
+                    "detail": "already highest bidder",
+                })
                 continue
             new_price = next_bump_price(order, self._cfg)
             out = executor.bump_offer(order, new_price)
@@ -543,7 +930,14 @@ class TradeEngine:
         """Step down the price of listed-but-unsold cards toward the cost floor."""
         if not isinstance(executor, LiveExecutor):
             return []
-        delay_sec = max(0.0, self._cfg.markdown_delay_days) * SECONDS_PER_DAY
+        jitter_pct = max(0.0, float(self._cfg.markdown_jitter_pct))
+        # The jitter can pull a step *earlier* than the nominal delay, so widen
+        # the coarse store query by the maximum negative jitter; the pure
+        # ``is_due_for_markdown`` then re-checks each card with its own exact,
+        # deterministic jittered delay so nothing fires too soon.
+        jitter_floor = max(0.0, 1.0 - jitter_pct / 100.0)
+        delay_sec = (max(0.0, self._cfg.markdown_delay_days) * jitter_floor
+                     * SECONDS_PER_DAY)
         # Coarse step ceiling for the query; the pure logic enforces the floor.
         step_pct = max(0.01, float(self._cfg.markdown_step_pct))
         max_steps = max(1, int(100.0 / step_pct) + 1)
@@ -555,10 +949,34 @@ class TradeEngine:
         now = time.time()
         results: list[dict[str, Any]] = []
         for holding in due:
-            if not is_due_for_markdown(holding, self._cfg, now):
+            # Deterministic per-card, per-step jitter (anti-snipe): the same
+            # holding+step always resolves to the same timing and step size, so
+            # the markdown curve is stable per card yet unpredictable across the
+            # inventory and cannot be reverse-engineered and waited out.
+            interval_jitter = markdown_jitter_factor(
+                f"{holding.nft}:int:{holding.markdown_steps}", jitter_pct)
+            step_jitter = markdown_jitter_factor(
+                f"{holding.nft}:step:{holding.markdown_steps}", jitter_pct)
+            if not is_due_for_markdown(holding, self._cfg, now,
+                                       interval_jitter=interval_jitter):
                 continue
-            new_price = markdown_price(holding, self._cfg)
+            new_price = markdown_price(holding, self._cfg,
+                                       step_jitter=step_jitter)
             old_price = round(holding.list_price_usd or 0.0, 2)
+            # Gas guard: never send a markdown whose drop is too small to be
+            # worth the on-chain fee. The pure check decides; we record the skip
+            # so the tiny step is visible but no transaction is signed.
+            if not markdown_change_is_meaningful(holding.list_price_usd or 0.0,
+                                                 new_price, self._cfg):
+                results.append({
+                    "nft": holding.nft,
+                    "name": holding.name,
+                    "old_price_usd": old_price,
+                    "new_price_usd": round(new_price, 2),
+                    "status": "skipped",
+                    "detail": "price change below minimum",
+                })
+                continue
             order = self._listing_order_for(holding)
             out = executor.markdown_listing(order, new_price)
             if out.status is OrderStatus.CONFIRMED:
@@ -782,6 +1200,9 @@ def _config_snapshot(cfg: TraderConfig) -> dict[str, Any]:
         "direct_buy_pct": cfg.direct_buy_pct,
         "offer_pct": cfg.offer_pct,
         "offer_discount_pct": cfg.offer_discount_pct,
+        "offer_open_discount_pct": cfg.offer_open_discount_pct,
+        "offer_ceiling_pct": cfg.offer_ceiling_pct,
+        "offer_increment_usd": cfg.offer_increment_usd,
         "offer_max_premium_pct": cfg.offer_max_premium_pct,
         "resell_discount_pct": cfg.resell_discount_pct,
         "escalation_volume_usd": cfg.escalation_volume_usd,
@@ -799,6 +1220,8 @@ def _config_snapshot(cfg: TraderConfig) -> dict[str, Any]:
         "markdown_delay_days": cfg.markdown_delay_days,
         "markdown_step_pct": cfg.markdown_step_pct,
         "markdown_interval_days": cfg.markdown_interval_days,
+        "markdown_jitter_pct": cfg.markdown_jitter_pct,
+        "markdown_min_change_usd": cfg.markdown_min_change_usd,
         "offer_accept_delay_days": cfg.offer_accept_delay_days,
         "offer_accept_min_market_pct": cfg.offer_accept_min_market_pct,
         "market_recheck_hours": cfg.market_recheck_hours,

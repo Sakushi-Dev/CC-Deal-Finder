@@ -16,10 +16,12 @@ from __future__ import annotations
 import pytest
 
 from collectorcrypt.trader.engine import (TradeEngine, _config_snapshot,
-                                          _order_states)
+                                          _order_states,
+                                          _replay_wallet_activity)
 from collectorcrypt.trader.executor import DryRunExecutor, LiveExecutor
 from collectorcrypt.trader.orders import OrderKind, OrderStatus
 from collectorcrypt.trader.store import Holding
+from collectorcrypt.trader.strategy import BuyPlan, Candidate, Offer
 
 from .conftest import (FakeClient, FakeSessionProvider, FakeWallet, make_buy,
                        make_config, make_list, make_offer, new_keypair,
@@ -50,6 +52,18 @@ def make_engine(cfg=None, *, wallet=None, store=None, provider=None,
         store=store,
         session_provider=provider or FakeSessionProvider(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_trading_client(monkeypatch):
+    """Default every engine-built trading client to a scriptable fake.
+
+    The activity sync fetches the wallet feed on *every* live cycle, so a live
+    test without an explicit client patch would otherwise hit the real API.
+    Tests that need a configured fake simply re-patch inside their body.
+    """
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: FakeClient())
 
 
 def armed_cfg():
@@ -259,7 +273,7 @@ def test_live_cycle_exit_flow_lists_relist_candidate(store):
 # Maintenance passes (ETAPPE 6): bump / cancel / markdown / accept / recheck
 # --------------------------------------------------------------------------- #
 _MAINT_KEYS = ("bumped", "cancelled", "marked_down", "offers_accepted",
-               "market_recheck")
+               "market_recheck", "activity_sync")
 
 
 def _seed_aged_open_offer(store, *, nft="O1", price=8.0, bump_count=0,
@@ -475,6 +489,265 @@ def test_accept_pass_read_error_is_safe(store, monkeypatch):
     assert "error" in report["offers_accepted"][0]
     assert "accept_offer" not in fake.call_names()
     assert store.get_holding("A1").status == "listed"
+
+
+# --------------------------------------------------------------------------- #
+# Activity sync: restart recovery from the wallet activity feed
+# --------------------------------------------------------------------------- #
+_OUR_WALLET = "WALLEThdrtest"  # FakeWallet default address
+
+
+def _ev(action, nft, *, frm=None, to=None, amount=None, card_id="",
+        name="", age_sec=60.0):
+    """Build one wallet-activity feed event (shape per captured feed)."""
+    from datetime import datetime, timezone, timedelta
+    created = (datetime.now(timezone.utc)
+               - timedelta(seconds=age_sec)).isoformat()
+    card = ({"id": card_id, "itemName": name, "category": "Pokemon"}
+            if card_id or name else None)
+    return {
+        "action": action,
+        "amount": amount,
+        "nftAddress": nft,
+        "from": {"wallet": frm} if frm else None,
+        "to": {"wallet": to} if to else None,
+        "card": card,
+        "createdAt": created,
+    }
+
+
+def test_replay_sale_to_us_is_buy():
+    state = _replay_wallet_activity(
+        [_ev("Sale", "N1", frm="SELLER", to=_OUR_WALLET, amount=95.06,
+             card_id="C1", name="Charizard")], _OUR_WALLET)
+    assert state.buys["N1"]["price"] == 95.06
+    assert state.buys["N1"]["name"] == "Charizard"
+    assert "N1" not in state.exits
+
+
+def test_replay_sale_from_us_is_exit():
+    # Feed is newest-first: the sale happened AFTER our listing.
+    state = _replay_wallet_activity([
+        _ev("Sale", "N1", frm=_OUR_WALLET, to="BUYER", amount=50.0,
+            age_sec=10),
+        _ev("List", "N1", frm=_OUR_WALLET, amount=55.0, age_sec=100),
+    ], _OUR_WALLET)
+    assert "N1" in state.exits
+    assert "N1" not in state.listings
+
+
+def test_replay_offer_lifecycle_last_event_wins():
+    # made -> updated -> cancelled (newest first in the feed)
+    state = _replay_wallet_activity([
+        _ev("Offer Cancelled", "N1", frm=_OUR_WALLET, age_sec=10),
+        _ev("Offer Updated", "N1", frm=_OUR_WALLET, amount=22.0, age_sec=20),
+        _ev("Offer Made", "N1", frm=_OUR_WALLET, amount=20.0, age_sec=30),
+    ], _OUR_WALLET)
+    assert "N1" not in state.open_offers
+    # Without the cancel, the update supersedes the original price.
+    state = _replay_wallet_activity([
+        _ev("Offer Updated", "N1", frm=_OUR_WALLET, amount=22.0, age_sec=20),
+        _ev("Offer Made", "N1", frm=_OUR_WALLET, amount=20.0, age_sec=30),
+    ], _OUR_WALLET)
+    assert state.open_offers["N1"]["price"] == 22.0
+
+
+def test_replay_offer_accepted_to_us_is_buy_and_closes_offer():
+    # Our standing offer filled: the seller accepted -> we bought at amount.
+    state = _replay_wallet_activity([
+        _ev("Offer Accepted", "N1", frm="SELLER", to=_OUR_WALLET,
+            amount=38.18, age_sec=10),
+        _ev("Offer Made", "N1", frm=_OUR_WALLET, amount=38.18, age_sec=20),
+    ], _OUR_WALLET)
+    assert "N1" not in state.open_offers
+    assert state.buys["N1"]["price"] == 38.18
+
+
+def test_replay_offer_accepted_from_us_is_exit():
+    # We accepted an incoming offer on our card -> we sold (net proceeds).
+    state = _replay_wallet_activity(
+        [_ev("Offer Accepted", "N1", frm=_OUR_WALLET, to="BIDDER",
+             amount=15.5232)], _OUR_WALLET)
+    assert "N1" in state.exits
+    assert "N1" not in state.buys
+
+
+def test_replay_list_then_unlist():
+    state = _replay_wallet_activity([
+        _ev("Unlisted", "N1", frm=_OUR_WALLET, age_sec=10),
+        _ev("List", "N1", frm=_OUR_WALLET, amount=49.75, age_sec=20),
+    ], _OUR_WALLET)
+    assert "N1" not in state.listings
+    state = _replay_wallet_activity([
+        _ev("Listing Updated", "N1", frm=_OUR_WALLET, amount=48.5, age_sec=10),
+        _ev("List", "N1", frm=_OUR_WALLET, amount=49.75, age_sec=20),
+    ], _OUR_WALLET)
+    assert state.listings["N1"]["price"] == 48.5
+
+
+def test_replay_ignores_foreign_events():
+    state = _replay_wallet_activity([
+        _ev("Offer Made", "N1", frm="SOMEONE", amount=25.49),
+        _ev("Sale", "N2", frm="A", to="B", amount=10.0),
+        _ev("List", "N3", frm="C", amount=5.0),
+    ], _OUR_WALLET)
+    assert not state.buys and not state.open_offers and not state.listings
+
+
+def test_live_cycle_exposes_activity_sync_key(store):
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["activity_sync"]["checked"] == 0
+    assert report["activity_sync"]["recovered_offers"] == []
+
+
+def test_activity_sync_recovers_open_offer(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("Offer Made", "OFR1", frm=_OUR_WALLET, amount=20.0,
+            card_id="CARD1", name="Pikachu"),
+    ]}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert [r["nft"] for r in report["activity_sync"]["recovered_offers"]] == ["OFR1"]
+    offers = store.open_offers()
+    assert len(offers) == 1
+    assert offers[0].nft == "OFR1"
+    assert offers[0].status is OrderStatus.OPEN
+    assert offers[0].price_usd == 20.0
+    assert offers[0].card_id == "CARD1"
+    assert offers[0].simulated is False
+
+
+def test_activity_sync_skips_cancelled_offer(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("Offer Cancelled", "OFR1", frm=_OUR_WALLET, age_sec=10),
+        _ev("Offer Made", "OFR1", frm=_OUR_WALLET, amount=20.0, age_sec=20),
+    ]}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["activity_sync"]["recovered_offers"] == []
+    assert store.open_offers() == []
+
+
+def test_activity_sync_does_not_duplicate_known_offer(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("Offer Made", "O1", frm=_OUR_WALLET, amount=8.0),
+    ]}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    o = make_offer(nft="O1", price_usd=8.0, market_usd=20.0, cycle_id="prev")
+    o.transition(OrderStatus.OPEN)
+    store.upsert_order(o)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["activity_sync"]["recovered_offers"] == []
+    assert len(store.open_offers()) == 1
+
+
+def test_activity_sync_recreates_missing_holding(store, monkeypatch):
+    # Fresh DB after a restart: a bought-and-listed card is rebuilt entirely
+    # from the feed — with cost basis and listing state.
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("List", "H1", frm=_OUR_WALLET, amount=120.0, card_id="C9",
+            name="Mewtwo", age_sec=10),
+        _ev("Sale", "H1", frm="SELLER", to=_OUR_WALLET, amount=95.06,
+            card_id="C9", name="Mewtwo", age_sec=20),
+    ]}
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "H1"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert [r["nft"] for r in report["activity_sync"]["recovered_holdings"]] == ["H1"]
+    h = store.get_holding("H1")
+    assert h.cost_usd == 95.06
+    assert h.name == "Mewtwo"
+    assert h.status == "listed"
+    assert h.list_price_usd == 120.0
+    assert h.listed_at is not None
+
+
+def test_activity_sync_skips_card_sold_within_feed(store, monkeypatch):
+    # Bought and later sold inside the feed window -> nothing to recreate.
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("Sale", "H1", frm=_OUR_WALLET, to="BUYER", amount=120.0,
+            age_sec=10),
+        _ev("Sale", "H1", frm="SELLER", to=_OUR_WALLET, amount=95.0,
+            age_sec=20),
+    ]}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["activity_sync"]["recovered_holdings"] == []
+    assert store.get_holding("H1") is None
+
+
+def test_activity_sync_backfills_zero_cost(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("Sale", "H1", frm="SELLER", to=_OUR_WALLET, amount=42.5),
+    ]}
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "H1"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    store.upsert_holding(Holding(nft="H1", name="Card", acquired_at=1.0,
+                                 cost_usd=0.0, market_usd_at_buy=0.0,
+                                 status="held"))
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["activity_sync"]["backfilled"] == [
+        {"nft": "H1", "fields": ["cost_usd", "market_usd_at_buy"]}]
+    assert store.get_holding("H1").cost_usd == 42.5
+    assert store.get_holding("H1").market_usd_at_buy == 42.5
+
+
+def test_activity_sync_never_overwrites_existing_cost(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_wallet_activity"] = {"data": [
+        _ev("Sale", "H1", frm="SELLER", to=_OUR_WALLET, amount=42.5),
+    ]}
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "H1"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_held(store, nft="H1")  # cost_usd=10.0 already known
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["activity_sync"]["backfilled"] == []
+    assert store.get_holding("H1").cost_usd == 10.0
+
+
+def test_activity_sync_fetch_error_recovers_nothing(store, monkeypatch):
+    from collectorcrypt.trader.ccapi import CCServerError
+    fake = FakeClient()
+    fake.errors["get_wallet_activity"] = CCServerError("api down", status=503)
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert "error" in report["activity_sync"]
+    assert store.open_offers() == []
 
 
 # --------------------------------------------------------------------------- #
@@ -819,5 +1092,284 @@ def test_live_cycle_refused_when_all_risk_limits_zero(store, monkeypatch):
     # Risk guard fires: posture reports halted
     assert report["risk"]["halted"] is True
     assert "risk limits" in report["risk"]["halt_reason"].lower()
-    # No live orders were sent despite there being a candidate.
-    assert fake.call_names() == []
+    # No live orders were sent despite there being a candidate. The activity
+    # sync's read-only feed fetch is allowed (recovery runs even while
+    # halted, like ownership sync); anything state-changing is not.
+    assert fake.call_names() in ([], ["get_wallet_activity"])
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic range bidding (escrow-leak fix): reprice offers vs the order book
+# --------------------------------------------------------------------------- #
+def _dyn_cfg(**kw):
+    base = dict(live=True, auth_provider="static", cc_token="tok",
+                max_consecutive_failures=3, offer_open_discount_pct=30.0,
+                offer_ceiling_pct=10.0, offer_increment_usd=0.01)
+    base.update(kw)
+    return make_config(**base)
+
+
+def _offer_plan(*, ask=100.0, resell=110.0, static_bid=75.0, budget=1000.0,
+                cap=1000.0, nft="X1"):
+    # ask=100 -> open_price=70 (30% off), ceiling_price=90 (10% off).
+    cand = Candidate(card={"nft": nft, "name": "C"}, ask_usd=ask,
+                     market_usd=ask * 1.2, discount_pct=0.0, resell_usd=resell)
+    return BuyPlan(offers=[Offer(cand, static_bid)], offer_budget=budget,
+                   card_cap_usd=cap)
+
+
+def test_reprice_disabled_returns_none_and_keeps_static_bid():
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True))
+    plan = _offer_plan(static_bid=75.0)
+    assert engine._reprice_offers_dynamically(plan) is None
+    assert plan.offers[0].offer_usd == 75.0  # untouched when feature is off
+
+
+def test_reprice_uncontested_uses_open_price(monkeypatch):
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", lambda nft: [])
+    plan = _offer_plan()
+    report = engine._reprice_offers_dynamically(plan)
+    assert report is not None
+    assert len(plan.offers) == 1
+    assert plan.offers[0].offer_usd == 70.0
+    assert report[0]["status"] == "repriced"
+    assert report[0]["offer_usd"] == 70.0
+
+
+def test_reprice_outbids_competitor_in_range(monkeypatch):
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity",
+                        lambda nft: [_bid("WB", 85.0)])
+    plan = _offer_plan()
+    engine._reprice_offers_dynamically(plan)
+    assert plan.offers[0].offer_usd == 85.01  # outbid by the increment
+
+
+def test_reprice_drops_offer_above_ceiling(monkeypatch):
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity",
+                        lambda nft: [_bid("WB", 95.0)])  # above ceiling 90
+    plan = _offer_plan()
+    report = engine._reprice_offers_dynamically(plan)
+    assert plan.offers == []                       # offer dropped
+    assert report[0]["status"] == "skipped"
+
+
+def test_reprice_excludes_our_own_bid(monkeypatch):
+    # Our own bid is the highest, but it must be ignored so we don't outbid
+    # ourselves; the real competitor sits below the open price -> bid open.
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(
+        engine, "_fetch_card_activity",
+        lambda nft: [_bid("WALLEThdrtest", 99.0), _bid("WB", 50.0)])
+    plan = _offer_plan()
+    engine._reprice_offers_dynamically(plan)
+    assert plan.offers[0].offer_usd == 70.0
+
+
+def test_reprice_skips_when_budget_below_open(monkeypatch):
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", lambda nft: [])
+    plan = _offer_plan(budget=60.0)  # cannot even cover the open price (70)
+    report = engine._reprice_offers_dynamically(plan)
+    assert plan.offers == []
+    assert report[0]["status"] == "skipped"
+
+
+def test_reprice_skips_when_open_breaks_resale_floor(monkeypatch):
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", lambda nft: [])
+    plan = _offer_plan(resell=68.0)  # open 70 >= resell 68 -> no profit -> skip
+    report = engine._reprice_offers_dynamically(plan)
+    assert plan.offers == []
+    assert report[0]["status"] == "skipped"
+
+
+def test_reprice_budget_shared_cheapest_first(monkeypatch):
+    # Two offers, budget only large enough for the cheaper card's open price.
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", lambda nft: [])
+    cheap = Offer(Candidate(card={"nft": "CHEAP", "name": "c"}, ask_usd=100.0,
+                            market_usd=120.0, discount_pct=0.0, resell_usd=110.0),
+                  75.0)   # open 70
+    dear = Offer(Candidate(card={"nft": "DEAR", "name": "d"}, ask_usd=200.0,
+                           market_usd=240.0, discount_pct=0.0, resell_usd=220.0),
+                 150.0)   # open 140
+    plan = BuyPlan(offers=[dear, cheap], offer_budget=100.0, card_cap_usd=1000.0)
+    engine._reprice_offers_dynamically(plan)
+    # Cheapest is funded first (70); the dear card no longer fits (140 > 30 left).
+    kept = {o.candidate.nft: o.offer_usd for o in plan.offers}
+    assert kept == {"CHEAP": 70.0}
+
+
+def test_reprice_read_error_falls_back_to_static_bid(monkeypatch):
+    def boom(nft):
+        raise RuntimeError("order book down")
+
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", boom)
+    plan = _offer_plan(static_bid=60.0)  # fits budget + below resale -> kept
+    report = engine._reprice_offers_dynamically(plan)
+    assert plan.offers[0].offer_usd == 60.0
+    assert report[0]["status"] == "fallback"
+
+
+def test_reprice_read_error_drops_when_static_bid_unaffordable(monkeypatch):
+    def boom(nft):
+        raise RuntimeError("order book down")
+
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", boom)
+    plan = _offer_plan(static_bid=200.0, resell=110.0)  # static bid > resale
+    report = engine._reprice_offers_dynamically(plan)
+    assert plan.offers == []
+    assert report[0]["status"] == "skipped"
+
+
+def test_reprice_simulation_uses_open_price_without_reading_book(monkeypatch):
+    # Dry-run/demo cannot read the live order book; with read_book=False the
+    # card is assumed uncontested and quoted at the opening lowball. The feed
+    # is never fetched (the stub would raise if it were).
+    def boom(nft):
+        raise AssertionError("order book must not be read in simulation")
+
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", boom)
+    plan = _offer_plan(static_bid=75.0)
+    report = engine._reprice_offers_dynamically(plan, read_book=False)
+    assert plan.offers[0].offer_usd == 70.0          # open price, not static 75
+    assert report[0]["status"] == "assumed"
+    assert "uncontested" in report[0]["detail"]
+
+
+def test_reprice_simulation_skips_when_budget_below_open(monkeypatch):
+    def boom(nft):
+        raise AssertionError("order book must not be read in simulation")
+
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    monkeypatch.setattr(engine, "_fetch_card_activity", boom)
+    plan = _offer_plan(budget=60.0)  # cannot cover the open price (70)
+    report = engine._reprice_offers_dynamically(plan, read_book=False)
+    assert plan.offers == []
+    assert report[0]["status"] == "skipped"
+
+
+def test_demo_cycle_reports_offer_pricing_when_enabled():
+    # A demo cycle now surfaces the dynamic offer pricing (read_book=False), so
+    # the simulation reflects the configured range instead of silently using the
+    # static bid. With no sourced listings the list is simply empty.
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True))
+    report = engine.run_cycle(sim_volume=500.0)
+    assert report["demo"] is True
+    assert report["offer_pricing"] == []
+
+
+def test_run_cycle_reports_offer_pricing_when_enabled(store, monkeypatch):
+    fake = FakeClient()
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(_dyn_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()  # no sourced offers -> empty reprice list
+    assert report["offer_pricing"] == []
+
+
+def test_run_cycle_no_offer_pricing_when_disabled(store, monkeypatch):
+    fake = FakeClient()
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert "offer_pricing" not in report  # key omitted when feature is off
+
+
+# --------------------------------------------------------------------------- #
+# Self-bidding guard (offer-bump fix): never bump when already highest
+# --------------------------------------------------------------------------- #
+def test_bump_skips_when_we_are_highest_bidder(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_card_activity"] = {
+        "data": [_bid("WALLEThdrtest", 50.0)]}  # our own wallet leads
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_aged_open_offer(store, nft="O1", price=8.0)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert len(report["bumped"]) == 1
+    assert report["bumped"][0]["status"] == "skipped"
+    assert "already highest bidder" in report["bumped"][0]["detail"]
+    assert "update_offer" not in fake.call_names()  # no bump sent
+    persisted = store.open_offers()
+    assert persisted[0].bump_count == 0  # offer untouched
+
+
+def test_bump_proceeds_when_competitor_is_highest(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_card_activity"] = {
+        "data": [_bid("WB", 50.0)]}  # someone else leads
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_aged_open_offer(store, nft="O1", price=8.0)
+    engine = make_engine(armed_cfg(), wallet=FakeWallet(can_sign=True),
+                        store=store)
+    report = engine.run_cycle()
+    assert report["bumped"][0]["bump_count"] == 1
+    assert "update_offer" in fake.call_names()  # bump went out
+
+
+# --------------------------------------------------------------------------- #
+# Markdown gas guard + jitter wiring
+# --------------------------------------------------------------------------- #
+def _seed_aged_listing(store, *, nft, list_price, market_at_buy, cost=10.0):
+    import time as _t
+    old = _t.time() - 100 * 86400.0
+    store.upsert_holding(Holding(
+        nft=nft, name="Card", category="Pokemon", acquired_at=old,
+        cost_usd=cost, market_usd_at_buy=market_at_buy, status="listed",
+        list_price_usd=list_price, listed_at=old))
+
+
+def test_markdown_skips_change_below_minimum(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "M1"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_aged_listing(store, nft="M1", list_price=20.0, market_at_buy=20.0)
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      max_consecutive_failures=3, markdown_step_pct=1.0,
+                      markdown_min_change_usd=0.25)  # step 0.20 < 0.25
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store)
+    report = engine.run_cycle()
+    assert len(report["marked_down"]) == 1
+    assert report["marked_down"][0]["status"] == "skipped"
+    assert "below minimum" in report["marked_down"][0]["detail"]
+    assert "update_listing" not in fake.call_names()  # no tx signed
+    held = store.get_holding("M1")
+    assert held.list_price_usd == 20.0  # unchanged
+    assert held.markdown_steps == 0
+
+
+def test_markdown_with_jitter_still_steps_down(store, monkeypatch):
+    fake = FakeClient()
+    fake.responses["get_owned_cards"] = {
+        "filterNFtCard": [{"nftAddress": "M2"}], "totalPages": 1}
+    monkeypatch.setattr("collectorcrypt.trader.engine.CCTradingClient",
+                        lambda **kw: fake)
+    _seed_aged_listing(store, nft="M2", list_price=20.0, market_at_buy=100.0)
+    cfg = make_config(live=True, auth_provider="static", cc_token="tok",
+                      max_consecutive_failures=3, markdown_step_pct=5.0,
+                      markdown_jitter_pct=20.0)  # base step 5.0, ±20%
+    engine = make_engine(cfg, wallet=FakeWallet(can_sign=True), store=store)
+    report = engine.run_cycle()
+    assert len(report["marked_down"]) == 1
+    assert report["marked_down"][0]["status"] == "confirmed"
+    assert "update_listing" in fake.call_names()
+    held = store.get_holding("M2")
+    assert held.list_price_usd < 20.0           # stepped down
+    assert 13.0 < held.list_price_usd < 17.0    # base 15 ± 20% step jitter
+    assert held.markdown_steps == 1
+
