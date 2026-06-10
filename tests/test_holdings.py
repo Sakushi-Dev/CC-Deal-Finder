@@ -239,6 +239,86 @@ def test_best_active_offer_skips_non_offer_events_and_bad_amounts():
     assert best.amount == 12.5
 
 
+def test_best_active_offer_excludes_our_own_wallet():
+    # Our own high bid is skipped so the highest *competing* bid surfaces.
+    feed = [
+        _feed_entry("Offer Made", "OURS", 500.0),
+        _feed_entry("Offer Made", "WB", 90.0),
+    ]
+    best = H.best_active_offer(feed, exclude_wallet="OURS")
+    assert best is not None
+    assert best.buyer == "WB"
+    assert best.amount == 90.0
+
+
+def test_best_active_offer_exclude_returns_none_when_only_ours():
+    feed = [_feed_entry("Offer Made", "OURS", 42.0)]
+    assert H.best_active_offer(feed, exclude_wallet="OURS") is None
+    # Without the exclusion our own bid is still the highest.
+    assert H.best_active_offer(feed).buyer == "OURS"  # type: ignore[union-attr]
+
+
+# --------------------------------------------------------------------------- #
+# markdown_jitter_factor — deterministic anti-snipe jitter
+# --------------------------------------------------------------------------- #
+def test_jitter_factor_zero_when_disabled():
+    assert H.markdown_jitter_factor("anything", 0.0) == 0.0
+    assert H.markdown_jitter_factor("anything", -5.0) == 0.0
+
+
+def test_jitter_factor_is_deterministic():
+    a = H.markdown_jitter_factor("H1:int:0", 20.0)
+    b = H.markdown_jitter_factor("H1:int:0", 20.0)
+    assert a == b  # same key -> same factor across calls/processes
+
+
+def test_jitter_factor_within_range_and_varies_by_key():
+    keys = [f"NFT{i}:int:{i}" for i in range(50)]
+    factors = [H.markdown_jitter_factor(k, 20.0) for k in keys]
+    for f in factors:
+        assert -0.20 <= f <= 0.20  # |factor| <= jitter_pct/100
+    assert len(set(factors)) > 1  # different keys produce different jitter
+
+
+# --------------------------------------------------------------------------- #
+# markdown_price / is_due_for_markdown — jitter wiring
+# --------------------------------------------------------------------------- #
+def test_markdown_price_step_jitter_scales_step():
+    h = _holding(market_usd_at_buy=100.0, cost_usd=10.0, list_price_usd=90.0)
+    cfg = make_config(markdown_step_pct=2.0)  # base step = 2.0 -> 88.0
+    # +50% jitter -> step 3.0 -> 87.0; -50% -> step 1.0 -> 89.0
+    assert markdown_price(h, cfg, step_jitter=0.5) == 87.0
+    assert markdown_price(h, cfg, step_jitter=-0.5) == 89.0
+
+
+def test_is_due_for_markdown_interval_jitter_delays_step():
+    h = _holding(listed_at=T0)
+    cfg = make_config(markdown_delay_days=3.0)
+    # +50% jitter stretches the 3-day delay to 4.5 days.
+    assert is_due_for_markdown(h, cfg, now=T0 + 3 * DAY,
+                               interval_jitter=0.5) is False
+    assert is_due_for_markdown(h, cfg, now=T0 + 5 * DAY,
+                               interval_jitter=0.5) is True
+    # -50% jitter shrinks it to 1.5 days -> due earlier.
+    assert is_due_for_markdown(h, cfg, now=T0 + 2 * DAY,
+                               interval_jitter=-0.5) is True
+
+
+# --------------------------------------------------------------------------- #
+# markdown_change_is_meaningful — gas guard
+# --------------------------------------------------------------------------- #
+def test_markdown_change_meaningful_disabled_allows_any_drop():
+    cfg = make_config(markdown_min_change_usd=0.0)
+    assert H.markdown_change_is_meaningful(100.0, 99.99, cfg) is True
+
+
+def test_markdown_change_meaningful_threshold():
+    cfg = make_config(markdown_min_change_usd=0.25)
+    assert H.markdown_change_is_meaningful(100.0, 99.80, cfg) is False  # 0.20
+    assert H.markdown_change_is_meaningful(100.0, 99.75, cfg) is True   # 0.25
+    assert H.markdown_change_is_meaningful(100.0, 99.50, cfg) is True   # 0.50
+
+
 # --------------------------------------------------------------------------- #
 # should_blacklist
 # --------------------------------------------------------------------------- #

@@ -24,6 +24,7 @@ persistence and the live/dry-run seam.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from .config import TraderConfig
@@ -46,7 +47,8 @@ def _hours(value: float) -> float:
 # --------------------------------------------------------------------------- #
 # Markdown curve (feature 5)
 # --------------------------------------------------------------------------- #
-def markdown_price(holding: Holding, cfg: TraderConfig) -> float:
+def markdown_price(holding: Holding, cfg: TraderConfig, *,
+                   step_jitter: float = 0.0) -> float:
     """Next markdown price for a held, listed card, clamped to the cost floor.
 
     Each step lowers the price by ``markdown_step_pct`` of the card's market
@@ -54,12 +56,17 @@ def markdown_price(holding: Holding, cfg: TraderConfig) -> float:
     raised), never below ``cost_usd`` — the permanent 0%-profit floor. The step
     size is anchored to ``market_usd_at_buy`` (not the live price) so the curve
     is stable and predictable regardless of how many steps have run.
+
+    ``step_jitter`` is an optional factor in ``[-jitter, +jitter]`` (supplied by
+    the engine from ``markdown_jitter_pct``) that scales this step's size so the
+    markdown pattern cannot be reverse-engineered and waited out. 0 = no jitter.
     """
     floor = float(holding.cost_usd)
     current = holding.list_price_usd
     if current is None:
         current = holding.market_usd_at_buy
-    step = holding.market_usd_at_buy * (float(cfg.markdown_step_pct) / 100.0)
+    step_pct = max(0.0, float(cfg.markdown_step_pct) * (1.0 + float(step_jitter)))
+    step = holding.market_usd_at_buy * (step_pct / 100.0)
     return max(floor, float(current) - step)
 
 
@@ -70,25 +77,63 @@ def is_at_floor(holding: Holding) -> bool:
     return float(holding.list_price_usd) <= float(holding.cost_usd)
 
 
-def is_due_for_markdown(holding: Holding, cfg: TraderConfig, now: float) -> bool:
+def is_due_for_markdown(holding: Holding, cfg: TraderConfig, now: float, *,
+                        interval_jitter: float = 0.0) -> bool:
     """Whether a listed, unsold card is due for its next markdown step.
 
     Returns ``False`` (no action) unless the card is listed, still unsold, still
     above the cost floor, has waited the initial delay since listing, and — for
     subsequent steps — has waited the inter-step interval since the last step.
+
+    ``interval_jitter`` is an optional factor in ``[-jitter, +jitter]`` (from
+    ``markdown_jitter_pct``) that scales both the initial delay and the
+    inter-step interval so the timing is unpredictable. 0 = deterministic.
     """
     if holding.sold_at is not None or holding.listed_at is None:
         return False
     if is_at_floor(holding):
         return False
+    scale = max(0.0, 1.0 + float(interval_jitter))
     # Initial delay measured from when the listing went live.
-    if now - float(holding.listed_at) < _days(cfg.markdown_delay_days):
+    if now - float(holding.listed_at) < _days(cfg.markdown_delay_days) * scale:
         return False
     # Subsequent steps respect the inter-step interval.
     if holding.last_markdown_at is not None:
-        if now - float(holding.last_markdown_at) < _days(cfg.markdown_interval_days):
+        if now - float(holding.last_markdown_at) < _days(cfg.markdown_interval_days) * scale:
             return False
     return True
+
+
+def markdown_change_is_meaningful(old_price: float, new_price: float,
+                                  cfg: TraderConfig) -> bool:
+    """Whether a markdown's price drop is large enough to justify the gas cost.
+
+    ``markdown_min_change_usd == 0`` disables the guard (any drop is fine).
+    Otherwise the drop (``old − new``) must be at least the configured minimum,
+    so a few-cent adjustment never triggers an on-chain transaction that costs
+    more in gas than it is worth.
+    """
+    min_change = max(0.0, float(cfg.markdown_min_change_usd))
+    if min_change <= 0:
+        return True
+    return (float(old_price) - float(new_price)) >= min_change
+
+
+def markdown_jitter_factor(key: str, jitter_pct: float) -> float:
+    """Deterministic jitter factor in ``[-jitter_pct/100, +jitter_pct/100]``.
+
+    Pure: the same ``key`` always yields the same factor (stable across cycles
+    and processes — it uses SHA-256, not Python's salted ``hash``), so a given
+    holding/step pair gets one fixed jittered interval and step size while the
+    pattern varies unpredictably between cards and steps. ``jitter_pct <= 0``
+    returns 0.0 (no jitter).
+    """
+    j = max(0.0, float(jitter_pct)) / 100.0
+    if j <= 0:
+        return 0.0
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    unit = int.from_bytes(digest[:8], "big") / float(1 << 64)  # [0, 1)
+    return (unit * 2.0 - 1.0) * j  # [-j, +j]
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +199,8 @@ def _to_amount(value: object) -> float | None:
     return amount if amount > 0 else None
 
 
-def best_active_offer(feed: list[dict]) -> IncomingOffer | None:
+def best_active_offer(feed: list[dict], *,
+                      exclude_wallet: str = "") -> IncomingOffer | None:
     """Pick the highest still-open incoming bid from a card-activity feed.
 
     The CollectorCrypt card-activity endpoint returns a chronological log
@@ -167,7 +213,11 @@ def best_active_offer(feed: list[dict]) -> IncomingOffer | None:
     a given bidder wallet is that wallet's current state. Among wallets whose
     current state is an open ``"Offer Made"``, the highest ``amount`` wins.
     Returns ``None`` when no bid is currently open. Pure and side-effect-free.
+
+    ``exclude_wallet`` (e.g. our own address) drops that wallet's bids, so the
+    caller can find the highest *competing* bid when deciding a dynamic price.
     """
+    skip = (exclude_wallet or "").strip()
     state: dict[str, float | None] = {}
     for entry in feed or []:
         if not isinstance(entry, dict):
@@ -179,6 +229,8 @@ def best_active_offer(feed: list[dict]) -> IncomingOffer | None:
         wallet = str(sender.get("wallet") or "").strip()
         if not wallet or wallet in state:
             continue  # already have this wallet's newest offer-event
+        if skip and wallet == skip:
+            continue  # ignore our own bids when looking for competitors
         if action == _OFFER_MADE:
             state[wallet] = _to_amount(entry.get("amount"))
         else:  # cancelled / accepted -> the wallet has no open offer
