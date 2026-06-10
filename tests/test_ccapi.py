@@ -319,6 +319,39 @@ def test_get_owned_cards_retries_as_read():
     assert len(http.calls) == 2
 
 
+def test_get_wallet_activity_path_and_params():
+    # Wallet-wide feed: bare `card-activity` (no path segment) with wallet+v2
+    # only. `day` is omitted by default — the probe showed it silently drops
+    # most of the feed on the wallet-wide variant.
+    client, http = make_client([FakeResponse(200, [{"action": "Sale"}])])
+    client.get_wallet_activity(wallet="WALLET1")
+    assert http.calls[0]["method"] == "GET"
+    assert http.calls[0]["url"].endswith("/card-activity")
+    assert http.calls[0]["params"] == {"wallet": "WALLET1", "v2": "true"}
+
+
+def test_get_wallet_activity_passes_day_when_given():
+    client, http = make_client([FakeResponse(200, [])])
+    client.get_wallet_activity(wallet="W", day=30)
+    assert http.calls[0]["params"] == {"wallet": "W", "day": 30, "v2": "true"}
+
+
+def test_get_wallet_activity_wraps_array_as_data():
+    feed = [{"action": "Offer Made", "amount": 20.0}]
+    client, _ = make_client([FakeResponse(200, feed)])
+    assert client.get_wallet_activity(wallet="W") == {"data": feed}
+
+
+def test_get_wallet_activity_retries_as_read():
+    # A read GET is idempotent -> retried on a transient 5xx then succeeds.
+    client, http = make_client([
+        FakeResponse(503, {"error": "busy"}),
+        FakeResponse(200, [{"action": "Sale"}]),
+    ])
+    assert client.get_wallet_activity(wallet="W") == {"data": [{"action": "Sale"}]}
+    assert len(http.calls) == 2
+
+
 def test_accept_offer_not_retried(monkeypatch):
     # A state-changing write is never auto-retried (no double-accept).
     client, http = make_client([

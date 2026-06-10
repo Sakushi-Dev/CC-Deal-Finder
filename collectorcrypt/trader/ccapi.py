@@ -58,7 +58,8 @@ EP_CANCEL_LISTING = "marketplace/cancel-listing"
 EP_ACCEPT_OFFER = "marketplace/accept-offer"
 EP_BROADCAST = "marketplace/broadcast"     # broadcast a signed tx
 EP_CALC_LISTING_FEE = "calcListingFee"
-EP_USER_CARDS = "cards"                    # VERIFIED 200 -> GET cards/{wallet}/
+EP_USER_CARDS = "cards"
+EP_WALLET_ACTIVITY = "card-activity"       # VERIFIED 200 -> GET card-activity?wallet=…
 EP_CARD_ACTIVITY = "card-activity"         # VERIFIED 200 -> GET card-activity/{nft}
 RPC_CHECK_LISTING_STATUS = "checkListingStatus"   # VERIFIED 200 (RPC method)
 
@@ -211,6 +212,31 @@ class CCTradingClient:
         return self._request(
             "GET", f"{EP_USER_CARDS}/{wallet}/", auth=True, idempotent=True,
             params={"page": page, "step": step, "orderBy": order_by},
+        )
+
+    def get_wallet_activity(self, *, wallet: str,
+                            day: int | None = None) -> dict[str, Any]:
+        """Read a wallet's complete recent activity feed. VERIFIED (probe 2026-06-08).
+
+        ``GET card-activity`` with ``{wallet, v2}`` (no path segment — unlike
+        the per-card ``card-activity/{nft}``). Returns a flat, newest-first
+        activity log of everything touching the wallet (offers made/updated/
+        cancelled/accepted, listings, listing updates, sales), wrapped by the
+        transport as ``{"data": [...]}`` since the raw body is a bare array.
+
+        Pagination quirks (live probe): ``page``/``step``/``take``/``skip``
+        are rejected with 400; ``limit``/``offset`` are accepted but return
+        fewer items than requested, and ``day`` filters far more aggressively
+        than its per-card counterpart. The only verified way to get the full
+        feed is the bare unpaginated request, so ``day`` defaults to ``None``
+        (omitted). A read, so it is idempotent and retryable.
+        """
+        params: dict[str, Any] = {"wallet": wallet, "v2": "true"}
+        if day is not None:
+            params["day"] = day
+        return self._request(
+            "GET", EP_WALLET_ACTIVITY, auth=True, idempotent=True,
+            params=params,
         )
 
     # ------------------------------------------------------------------ #
