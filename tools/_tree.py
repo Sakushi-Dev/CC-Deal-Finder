@@ -4,8 +4,33 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "tools" / "_tree.md"
-EXCLUDE_DIRS = {".git", ".pytest_cache", ".venv", ".vscode", "__pycache__"}
-EXCLUDE_EXTS = {".db", ".db-shm", ".db-wal", ".log", ".pyc", ".sqlite"}
+
+# Always exclude regardless of .gitignore
+_ALWAYS_EXCLUDE_DIRS = {".git", "runs", "captures"}
+
+
+def _load_gitignore():
+    gitignore = ROOT / ".gitignore"
+    dirs, names, exts = set(), set(), set()
+    if not gitignore.exists():
+        return dirs, names, exts
+    for line in gitignore.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        if line.endswith("/"):
+            dirs.add(line.rstrip("/"))
+        elif line.startswith("*.") and "/" not in line and "[" not in line:
+            exts.add(line[1:])  # e.g. "*.log" → ".log"
+        elif "/" not in line and "*" not in line and "?" not in line:
+            names.add(line)
+    return dirs, names, exts
+
+
+_gi_dirs, _gi_names, _gi_exts = _load_gitignore()
+EXCLUDE_DIRS = _ALWAYS_EXCLUDE_DIRS | _gi_dirs
+EXCLUDE_NAMES = _gi_names
+EXCLUDE_EXTS = _gi_exts
 TEE = "\u251c"
 LAST = "\u2514"
 VERTICAL = "\u2502"
@@ -24,6 +49,8 @@ def visible_items(path):
             continue
         if item.is_dir() and item.name in EXCLUDE_DIRS:
             continue
+        if item.is_file() and item.name in EXCLUDE_NAMES:
+            continue
         if item.is_file() and item.suffix in EXCLUDE_EXTS:
             continue
         items.append(item)
@@ -36,8 +63,9 @@ def padded_label(prefix, connector, name, width):
     return html_indent(prefix) + tail.ljust(max(len(tail), width - len(prefix)))
 
 
-def file_line(lines, prefix, connector, name, width):
-    lines.append(f"<code>{padded_label(prefix, connector, name, width)}</code>{INFO_PLACEHOLDER}<br>")
+def file_line(lines, prefix, connector, name, width, is_last=False):
+    tag = "<br>" if not is_last else ""
+    lines.append(f"<code>{padded_label(prefix, connector, name, width)}</code>{INFO_PLACEHOLDER}{tag}")
 
 
 def directory_summary(lines, prefix, connector, name, is_top_level):
@@ -66,6 +94,11 @@ def render_directory(lines, path, prefix="", depth=0):
         default=0,
     )
 
+    last_file_index = max(
+        (i for i, item in enumerate(items) if item.is_file()),
+        default=-1,
+    )
+
     for index, item in enumerate(items):
         is_last = index == len(items) - 1
         connector = LAST + HORIZONTAL * 2 + " " if is_last else TEE + HORIZONTAL * 2 + " "
@@ -76,16 +109,14 @@ def render_directory(lines, path, prefix="", depth=0):
             render_directory(lines, item, child_prefix, depth + 1)
             lines.append("</details>")
         else:
-            file_line(lines, prefix, connector, item.name, file_width)
+            file_line(lines, prefix, connector, item.name, file_width, is_last=(index == last_file_index))
 
 
 def main():
     lines = [
-        "<details>",
-        "<summary><strong>CC-Deal-Finder/</strong></summary>",
+        "<code><strong>CC-Deal-Finder/</strong></code><br>",
     ]
     render_directory(lines, ROOT, prefix="    ")
-    lines.append("</details>")
     OUTPUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
