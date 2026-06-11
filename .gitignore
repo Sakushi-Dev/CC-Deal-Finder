@@ -58,6 +58,12 @@ Thumbs.db
 logs/
 records/
 
+# Generated simulation run logs
+simulation/runs/
+simulation/logs/
+simulation/csv/
+datavisualizing/output/
+
 # Project-specific caches / outputs
 .cache/
 cache/
