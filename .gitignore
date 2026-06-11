@@ -1,3 +1,6 @@
+# Generated files
+tools/_tree.md
+
 # Python
 __pycache__/
 *.py[cod]
